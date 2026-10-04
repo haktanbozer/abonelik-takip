@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Çevrimdışı - Abonelik Takip</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            text-align: center;
+            padding: 20px;
+        }
+        .card {
+            background-color: #1e293b;
+            padding: 32px;
+            border-radius: 16px;
+            max-width: 400px;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.5);
+            border: 1px solid #334155;
+        }
+        h1 { font-size: 22px; margin-bottom: 12px; color: #38bdf8; }
+        p { font-size: 14px; color: #94a3b8; line-height: 1.6; margin-bottom: 24px; }
+        button {
+            background-color: #0284c7;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:hover { background-color: #0369a1; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>İnternet Bağlantısı Yok</h1>
+        <p>Abonelik Takip Sistemine şu anda erişilemiyor. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.</p>
+        <button onclick="window.location.reload()">Yeniden Dene</button>
+    </div>
+</body>
+</html>
