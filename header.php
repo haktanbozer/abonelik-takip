@@ -50,26 +50,20 @@ try {
     <link rel="apple-touch-icon" href="icons/icon-192x192.png">
     <meta name="theme-color" content="#0f172a">
     
-    <!-- Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script nonce="<?= $cspNonce ?>">
-        tailwind.config = {
-            darkMode: 'class',
-            theme: {
-                extend: {
-                    colors: {
-                        brand: {
-                            50: '#f0f9ff',
-                            100: '#e0f2fe',
-                            500: '#0ea5e9',
-                            600: '#0284c7',
-                            700: '#0369a1',
-                        }
-                    }
-                }
-            }
-        };
+    <!-- Tailwind CSS (Derlenmiş Üretim Dosyası veya CDN Yedeklemesi) -->
+    <?php if (file_exists(__DIR__ . '/dist/style.css')): ?>
+        <link rel="stylesheet" href="dist/style.css?v=<?= filemtime(__DIR__ . '/dist/style.css') ?>">
+    <?php else: ?>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>
+            tailwind.config = {
+                darkMode: 'class',
+                theme: { extend: { colors: { brand: { 50: '#f0f9ff', 100: '#e0f2fe', 500: '#0ea5e9', 600: '#0284c7', 700: '#0369a1' } } } }
+            };
+        </script>
+    <?php endif; ?>
 
+    <script>
         // Sayfa yuklenmeden once beyaz/karanlik tema sinifini derhal uygula (FOUC onleyici)
         if (localStorage.getItem('color-theme') === 'dark') {
             document.documentElement.classList.add('dark');
@@ -89,7 +83,7 @@ try {
     </script>
     
     <!-- SweetAlert2 -->
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11" crossorigin="anonymous"></script>
     
     <style>
         body { transition: background-color 0.2s, color 0.2s; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
@@ -123,9 +117,21 @@ try {
                 <?php
                     $aktifKonumAd = $_SESSION['aktif_konum_ad'] ?? 'Tüm Mekanlar';
                     $aktifKonumId = $_SESSION['aktif_konum_id'] ?? null;
+                    $aktifKonumIcon = '📍';
+                    if (!empty($aktifKonumId) && isset($pdo)) {
+                        try {
+                            $locIcnStmt = $pdo->prepare("SELECT icon FROM locations WHERE id = ?");
+                            $locIcnStmt->execute([$aktifKonumId]);
+                            $rawIcn = $locIcnStmt->fetchColumn();
+                            if ($rawIcn) {
+                                $icMap = ['home' => '🏠', 'globe' => '💻', 'shield' => '🛡️', 'chart' => '📈', 'tax' => '💰', 'car' => '🚗', 'building' => '🏢', 'sun' => '🏖️'];
+                                $aktifKonumIcon = $icMap[$rawIcn] ?? (!empty($rawIcn) && mb_strlen($rawIcn, 'UTF-8') <= 4 && !ctype_alnum($rawIcn) ? $rawIcn : '📍');
+                            }
+                        } catch (Exception $e) {}
+                    }
                 ?>
-                <a href="konum-sec.php" class="flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 sm:py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60 rounded-xl text-xs font-semibold transition ml-1 sm:ml-2 shadow-sm group flex-shrink-0" title="Mekan Değiştir">
-                    <span class="text-xs sm:text-sm">📍</span>
+                <a href="secim.php" class="flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 sm:py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800/80 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700/60 rounded-xl text-xs font-semibold transition ml-1 sm:ml-2 shadow-sm group flex-shrink-0" title="Alan / Portföy Değiştir">
+                    <span class="text-xs sm:text-sm"><?= $aktifKonumIcon ?></span>
                     <span class="max-w-[90px] xs:max-w-[130px] sm:max-w-[160px] truncate text-[11px] sm:text-xs"><?= htmlspecialchars($aktifKonumAd) ?></span>
                     <svg class="w-3 h-3 text-slate-400 group-hover:text-slate-600 dark:group-hover:text-white transition flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>
                 </a>

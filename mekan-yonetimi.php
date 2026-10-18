@@ -252,24 +252,60 @@ require_once __DIR__ . '/header.php';
                         </div>
 
                         <div>
-                            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">İkon Tipi</label>
-                            <select name="icon" class="w-full p-2.5 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition">
+                            <div class="flex items-center justify-between mb-1.5">
+                                <label class="text-xs font-bold text-slate-700 dark:text-slate-300">İkon (Emoji) *</label>
+                                <span class="text-[10px] text-slate-400">İstediğiniz emojiyi yazın veya seçin</span>
+                            </div>
+                            <?php
+                            $seciliIkon = $duzenleModu ? ($duzenlenecekMekan['icon'] ?? '🏠') : '🏠';
+                            $legacyToEmoji = [
+                                'home' => '🏠',
+                                'globe' => '💻',
+                                'shield' => '🛡️',
+                                'chart' => '📈',
+                                'tax' => '💰',
+                                'car' => '🚗',
+                                'building' => '🏢',
+                                'sun' => '🏖️'
+                            ];
+                            $gosterilenIkon = $legacyToEmoji[$seciliIkon] ?? $seciliIkon;
+                            ?>
+                            <div class="relative">
+                                <input type="text" name="icon" id="mekan_icon_input" value="<?= htmlspecialchars($gosterilenIkon) ?>" maxlength="20" required
+                                    placeholder="Örn: 🏠, 💰, 🏛️, 🎓, ✈️, 👶, 🍔"
+                                    class="w-full p-2.5 pl-3 border rounded-xl text-base bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none transition font-sans">
+                            </div>
+
+                            <!-- Popüler Hızlı Emoji Seçim Butonları -->
+                            <div class="flex flex-wrap gap-1.5 mt-2">
                                 <?php
-                                $ikonlar = [
-                                    'home' => '🏠 Ev / Konut',
-                                    'globe' => '💻 Dijital / Bulut',
-                                    'shield' => '🛡️ Sigorta / Güvence',
-                                    'chart' => '📈 BES / Finans',
-                                    'car' => '🚗 Araç / Taşıt',
-                                    'building' => '🏢 İş / Ofis',
-                                    'sun' => '🏖️ Yazlık / Tatil'
+                                $hizliEmojiler = [
+                                    '🏠' => 'Ev / Konut',
+                                    '💻' => 'Dijital / Bulut',
+                                    '🛡️' => 'Sigorta / Güvence',
+                                    '📈' => 'BES / Finans',
+                                    '💰' => 'Vergi / Maliye',
+                                    '🚗' => 'Araç / Taşıt',
+                                    '🏢' => 'İş / Ofis',
+                                    '🏖️' => 'Yazlık / Tatil',
+                                    '🏛️' => 'Resmi / Kamu',
+                                    '🎓' => 'Eğitim / Kurs',
+                                    '✈️' => 'Seyahat',
+                                    '👶' => 'Çocuk / Aile',
+                                    '🍔' => 'Yeme / İçme',
+                                    '⚡' => 'Elektrik / Enerji',
+                                    '🏥' => 'Sağlık',
+                                    '💳' => 'Kart / Hesap'
                                 ];
-                                $seciliIkon = $duzenleModu ? $duzenlenecekMekan['icon'] : 'home';
-                                foreach ($ikonlar as $key => $label):
+                                foreach ($hizliEmojiler as $em => $title):
                                 ?>
-                                    <option value="<?= $key ?>" <?= ($seciliIkon === $key) ? 'selected' : '' ?>><?= $label ?></option>
+                                    <button type="button" onclick="document.getElementById('mekan_icon_input').value = '<?= $em ?>'" 
+                                        class="w-8 h-8 flex items-center justify-center rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-sm transition transform hover:scale-110 active:scale-95 border border-slate-200 dark:border-slate-700" 
+                                        title="<?= $title ?>">
+                                        <?= $em ?>
+                                    </button>
                                 <?php endforeach; ?>
-                            </select>
+                            </div>
                         </div>
 
                         <div>
@@ -457,6 +493,52 @@ require_once __DIR__ . '/header.php';
         </div>
 
     </div>
-</div>
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const nameInput = document.querySelector('input[name="name"]');
+    const iconInput = document.getElementById('mekan_icon_input');
+    const colorSelect = document.querySelector('select[name="color"]');
+    
+    if (nameInput && iconInput && colorSelect) {
+        let userManuallyChanged = false;
+        iconInput.addEventListener('input', () => userManuallyChanged = true);
+        colorSelect.addEventListener('change', () => userManuallyChanged = true);
+
+        nameInput.addEventListener('input', function() {
+            if (userManuallyChanged) return;
+            const val = this.value
+                .replace(/İ/g, 'i').replace(/I/g, 'ı')
+                .replace(/ı/g, 'i')
+                .toLowerCase();
+
+            if (/vergi|maliye|harc|harç|kdv|stopaj|tax|gelir/.test(val)) {
+                iconInput.value = '💰';
+                colorSelect.value = 'rose';
+            } else if (/ev|konut|daire|apartman|site|bina/.test(val)) {
+                iconInput.value = '🏠';
+                colorSelect.value = 'blue';
+            } else if (/ofis|is|iş|sirket|şirket|buro|büro|dukkan|dükkan/.test(val)) {
+                iconInput.value = '🏢';
+                colorSelect.value = 'blue';
+            } else if (/dijital|digital|bulut|cloud|yazilim|yazılım|online/.test(val)) {
+                iconInput.value = '💻';
+                colorSelect.value = 'purple';
+            } else if (/sigorta|kasko|police|poliçe|dask|saglik|sağlık/.test(val)) {
+                iconInput.value = '🛡️';
+                colorSelect.value = 'rose';
+            } else if (/bes|emeklilik|fon|yatirim|yatırım|borsa|finans/.test(val)) {
+                iconInput.value = '📈';
+                colorSelect.value = 'cyan';
+            } else if (/arac|araç|araba|tasit|taşıt|motor|hgs|otopark/.test(val)) {
+                iconInput.value = '🚗';
+                colorSelect.value = 'amber';
+            } else if (/yazlik|yazlık|tatil|villa/.test(val)) {
+                iconInput.value = '🏖️';
+                colorSelect.value = 'amber';
+            }
+        });
+    }
+});
+</script>
 
 <?php require_once __DIR__ . '/footer.php'; ?>

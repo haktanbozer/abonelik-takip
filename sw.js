@@ -1,5 +1,6 @@
-const CACHE_NAME = 'abonelik-takip-v1';
+const CACHE_NAME = 'abonelik-takip-v2';
 const STATIC_ASSETS = [
+    './dist/style.css',
     './offline.html',
     './manifest.json',
     './icons/favicon.png',

@@ -76,12 +76,12 @@ try {
     $stmtShares->execute([$id]);
     $shares = $stmtShares->fetchAll();
 
-    // Şifre görüntüleme yetkisi olan üyeleri çek
+    // Bilgileri ve detayları görüntüleme yetkisi olan üyeleri çek
     $stmtAcc = $pdo->prepare("
         SELECT u.id, u.username, u.full_name, u.role
         FROM subscription_access sa
         JOIN users u ON sa.user_id = u.id
-        WHERE sa.subscription_id = ? AND sa.can_view_credentials = 1
+        WHERE sa.subscription_id = ?
         ORDER BY u.full_name ASC
     ");
     $stmtAcc->execute([$id]);
@@ -129,6 +129,10 @@ $bazTutar = $isTaksitliSigorta ? (float)$sub['ins_installment_amount'] : (float)
 $cashback = (float)($sub['cashback_amount'] ?? 0);
 $netMaliyet = max(0, $bazTutar - $cashback - $toplamTahsilEdilenOrtak);
 $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
+
+// Fiyat Artışı & Zam Geçmişi Verileri
+$fiyatGecmisi = abonelikFiyatGecmisi($id);
+$son1YilZam = abonelikSon1YilZamOrani($id, (float)$sub['price']);
 ?>
 
 <div class="max-w-4xl mx-auto space-y-6">
@@ -197,6 +201,32 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
     </div>
     <?php endif; ?>
 
+    <?php if ($sub['status'] === 'paused'): 
+        $mult = match($sub['billing_cycle']) {
+            'annual' => 1,
+            'quarterly' => 4,
+            'semi_annual' => 2,
+            'one_time' => 0,
+            default => 12
+        };
+        $annualSave = (float)$sub['price'] * $mult;
+    ?>
+    <div class="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs">
+        <div class="flex items-center gap-3">
+            <span class="text-xl">⏸️</span>
+            <div>
+                <strong class="text-amber-700 dark:text-amber-300 block font-bold text-sm">Abonelik Dondurulmuş (Atıl Servis)</strong>
+                <span class="text-slate-600 dark:text-slate-400">Bu abonelik şu an dondurulmuş / askıya alınmış durumda. Kullanmıyorsanız tamamen iptal ederek yılda <strong class="text-emerald-600 dark:text-emerald-400 font-bold"><?= paraFormat($annualSave, $sub['currency']) ?></strong> tasarruf edebilirsiniz.</span>
+            </div>
+        </div>
+        <?php if ($canEdit): ?>
+        <button type="button" onclick="abonelikIptalEt(<?= $sub['id'] ?>, '<?= htmlspecialchars(addslashes($sub['title'])) ?>')" class="px-3.5 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl font-bold transition shadow-sm whitespace-nowrap ml-auto sm:ml-0">
+            Aboneliği İptal Et
+        </button>
+        <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
     <!-- 1. Temel Maliyet Kartı (4'lü Grid) -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
@@ -209,11 +239,26 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
             </div>
             <div class="text-2xl font-extrabold text-slate-900 dark:text-white tracking-tight"><?= $isTaksitliSigorta ? paraFormat($sub['ins_installment_amount'], $sub['currency']) : paraFormat($sub['price'], $sub['currency']) ?></div>
             <div class="text-xs text-slate-500 dark:text-slate-400 mt-1 flex items-center justify-between">
-                <span><?= $isTaksitliSigorta ? ((int)($sub['ins_installment_count'] ?? 1) . ' Taksit (Toplam: ' . paraFormat($sub['price'], $sub['currency']) . ')') : ($sub['billing_cycle'] === 'monthly' ? 'Her Ay' : ($sub['billing_cycle'] === 'annual' ? 'Yılda Bir' : ucfirst($sub['billing_cycle']))) ?></span>
+                <span><?= $isTaksitliSigorta ? ((int)($sub['ins_installment_count'] ?? 1) . ' Taksit (Toplam: ' . paraFormat($sub['price'], $sub['currency']) . ')') : ($sub['billing_cycle'] === 'monthly' ? 'Her Ay' : ($sub['billing_cycle'] === 'annual' ? 'Yıllık Peşin (Aylık: ~' . paraFormat(round((float)$sub['price'] / 12, 2), $sub['currency']) . ')' : ucfirst($sub['billing_cycle']))) ?></span>
                 <?php if ($toplamTasarruf > 0): ?>
                     <span class="text-emerald-600 dark:text-emerald-400 font-medium text-[11px]">-<?= paraFormat($toplamTasarruf, $sub['currency']) ?> tasarruf</span>
                 <?php endif; ?>
             </div>
+            <?php if (!empty($son1YilZam['has_hike'])): ?>
+                <div class="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80">
+                    <?php if ($son1YilZam['is_increase']): ?>
+                        <span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-lg bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20" title="Son 1 yıldaki baz fiyata (<?= paraFormat($son1YilZam['base_price'], $sub['currency']) ?>) göre değişim">
+                            <span>📈</span>
+                            <span>Son 1 Yılda +%<?= number_format($son1YilZam['percentage'], 1) ?> Zam</span>
+                        </span>
+                    <?php else: ?>
+                        <span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" title="Son 1 yıldaki baz fiyata (<?= paraFormat($son1YilZam['base_price'], $sub['currency']) ?>) göre indirim">
+                            <span>📉</span>
+                            <span>Son 1 Yılda -%<?= number_format(abs($son1YilZam['percentage']), 1) ?> İndirim</span>
+                        </span>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
         </div>
 
         <div class="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-sm">
@@ -229,7 +274,7 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
 
         <div class="p-5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-sm">
             <div class="flex items-center justify-between mb-1">
-                <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500">Sonraki Ödeme / Tahsilat</span>
+                <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 dark:text-slate-500"><?= $isTaksitliSigorta ? "Sonraki Aylık Taksit" : "Sonraki Ödeme / Tahsilat" ?></span>
                 <?php if ($canEdit && !empty($sub['next_payment_date'])): ?>
                     <button type="button" onclick="odendiIsaretle(<?= $sub['id'] ?>, '<?= htmlspecialchars(addslashes($sub['title'])) ?>')" class="px-2 py-0.5 bg-emerald-50 dark:bg-emerald-500/10 hover:bg-emerald-100 dark:hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 rounded-lg text-[11px] font-bold transition flex items-center gap-1 shadow-sm" title="Ödendi olarak işaretle ve bir sonraki döneme ötele">
                         <span>✓ Ödendi</span>
@@ -346,13 +391,16 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
                 <span class="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block mb-1">Giriş Şifresi (AES-256 Şifreli)</span>
                 <?php if ($canViewPassword): ?>
                     <div class="flex items-center justify-between">
-                        <span id="password_display" class="text-sm font-semibold text-purple-600 dark:text-purple-300 font-mono tracking-widest">••••••••••••</span>
-                        <div class="flex items-center gap-1">
-                            <button id="show_password_btn" onclick="sifreyiAc(<?= $sub['id'] ?>)" 
-                                class="text-xs bg-purple-100 dark:bg-purple-600/20 hover:bg-purple-200 dark:hover:bg-purple-600/30 text-purple-700 dark:text-purple-300 px-2.5 py-1 rounded-lg transition font-semibold">
-                                Şifreyi Göster
+                        <span id="password_display" class="text-sm font-semibold text-purple-600 dark:text-purple-300 font-mono tracking-widest select-all">••••••••••••</span>
+                        <div class="flex items-center gap-1.5">
+                            <button id="show_password_btn" type="button" 
+                                class="text-xs bg-purple-100 dark:bg-purple-600/20 hover:bg-purple-200 dark:hover:bg-purple-600/30 text-purple-700 dark:text-purple-300 px-2.5 py-1 rounded-lg transition font-semibold inline-flex items-center gap-1 cursor-pointer">
+                                <span>👁️</span> <span>Şifreyi Göster</span>
                             </button>
-                            <button id="copy_password_btn" class="hidden text-xs text-slate-400 hover:text-slate-800 dark:hover:text-white p-1 rounded transition" title="Kopyala">
+                            <button id="hide_password_btn" type="button" onclick="gizleSifre()" class="hidden text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 px-2.5 py-1 rounded-lg transition font-semibold inline-flex items-center gap-1 cursor-pointer">
+                                <span>🙈</span> <span>Gizle</span>
+                            </button>
+                            <button id="copy_password_btn" type="button" class="hidden text-xs text-slate-400 hover:text-slate-800 dark:hover:text-white p-1 rounded transition" title="Kopyala">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
                             </button>
                         </div>
@@ -366,27 +414,6 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
             </div>
         </div>
 
-        <!-- Şifre Erişim İzni Olan Üyeler Listesi -->
-        <div class="pt-3 border-t border-purple-100 dark:border-purple-500/20 text-xs">
-            <span class="text-slate-500 dark:text-slate-400 font-semibold block mb-2">👥 Şifreyi Görüntüleme İzni Olan Üyeler:</span>
-            <div class="flex flex-wrap items-center gap-1.5">
-                <span class="px-2.5 py-1 bg-purple-50 dark:bg-purple-500/20 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/30 rounded-lg text-[11px] font-bold">
-                    👑 <?= htmlspecialchars($sub['creator_name'] ?: $sub['creator_username']) ?> (Ekleyen)
-                </span>
-                <?php if ($sub['payer_user_id'] && $sub['payer_user_id'] != $sub['user_id']): ?>
-                    <span class="px-2.5 py-1 bg-blue-50 dark:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/30 rounded-lg text-[11px] font-bold">
-                        💳 <?= htmlspecialchars($sub['payer_name'] ?: $sub['payer_username']) ?> (Ödeyen)
-                    </span>
-                <?php endif; ?>
-                <?php foreach ($sharedUsers as $su): 
-                    if ($su['id'] == $sub['user_id'] || $su['id'] == $sub['payer_user_id']) continue;
-                ?>
-                    <span class="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg text-[11px] font-medium">
-                        ✓ <?= htmlspecialchars($su['full_name'] ?: $su['username']) ?>
-                    </span>
-                <?php endforeach; ?>
-            </div>
-        </div>
     </div>
     <?php endif; ?>
 
@@ -683,7 +710,75 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
     </div>
     <?php endif; ?>
 
-    <!-- 3. Masraf Paylaşımı / Ortak Hesap (Family & Friends Sharing) -->
+    <!-- Bilgileri Görüntüleme ve Erişim İzni (Tüm Abonelik Türleri) -->
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div>
+                <h2 class="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-2">
+                    <span>👥 Bilgileri Görüntüleme ve Erişim İzni</span>
+                </h2>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                    <?php if ($sub['category_type'] === 'digital'): ?>
+                        Bu aboneliğin hesap şifresi, giriş bilgileri, faturaları ve tüm detaylarına erişebilen üyeler.
+                    <?php elseif (in_array($sub['category_type'], ['utility', 'telecom'])): ?>
+                        Bu aboneliğin abone/sözleşme no, sayaç/tarife bilgileri, faturaları ve belgelerine erişebilen üyeler.
+                    <?php elseif (in_array($sub['category_type'], ['insurance', 'bes'])): ?>
+                        Bu poliçe/sözleşmenin teminat, taksit, katkı payı detayları ve belgelerine erişebilen üyeler.
+                    <?php else: ?>
+                        Bu aboneliğin tüm detayları, faturaları ve ekli belgelerine erişebilen üyeler.
+                    <?php endif; ?>
+                </p>
+            </div>
+            <?php if ($canEdit): ?>
+                <a href="abonelik-duzenle.php?id=<?= $sub['id'] ?>#access-section" 
+                   class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-50 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-900/30 text-slate-700 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 border border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-500/40 rounded-xl text-xs font-bold transition shadow-sm self-start sm:self-auto">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4"></path></svg>
+                    <span>İzinleri Yönet</span>
+                </a>
+            <?php endif; ?>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2">
+            <!-- Ekleyen / Sahibi -->
+            <div class="inline-flex items-center gap-2 px-3 py-1.5 bg-purple-50 dark:bg-purple-500/10 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-500/20 rounded-xl text-xs font-semibold shadow-xs">
+                <span class="w-6 h-6 rounded-lg bg-purple-200 dark:bg-purple-900/60 flex items-center justify-center text-xs shadow-xs">👑</span>
+                <span><?= htmlspecialchars($sub['creator_name'] ?: $sub['creator_username']) ?></span>
+                <span class="text-[10px] text-purple-500 font-normal">(Ekleyen)</span>
+            </div>
+
+            <!-- Ödeyen (farklıysa) -->
+            <?php if (!empty($sub['payer_user_id']) && $sub['payer_user_id'] != $sub['user_id']): ?>
+                <div class="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 dark:bg-blue-500/10 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-500/20 rounded-xl text-xs font-semibold shadow-xs">
+                    <span class="w-6 h-6 rounded-lg bg-blue-200 dark:bg-blue-900/60 flex items-center justify-center text-xs shadow-xs">💳</span>
+                    <span><?= htmlspecialchars($sub['payer_name'] ?: $sub['payer_username']) ?></span>
+                    <span class="text-[10px] text-blue-500 font-normal">(Ödeyen)</span>
+                </div>
+            <?php endif; ?>
+
+            <!-- Yetki Verilen Diğer Üyeler -->
+            <?php 
+            $hasAdditional = false;
+            foreach ($sharedUsers as $su): 
+                if ($su['id'] == $sub['user_id'] || $su['id'] == ($sub['payer_user_id'] ?? 0)) continue;
+                $hasAdditional = true;
+            ?>
+                <div class="inline-flex items-center gap-2 px-3 py-1.5 bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-medium">
+                    <span class="w-5 h-5 rounded-md bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-[10px] font-bold">✓</span>
+                    <span><?= htmlspecialchars($su['full_name'] ?: $su['username']) ?></span>
+                    <span class="text-[10px] text-slate-400 font-normal">(@<?= htmlspecialchars($su['username']) ?>)</span>
+                </div>
+            <?php endforeach; ?>
+        </div>
+
+        <?php if (!$hasAdditional): ?>
+            <div class="text-[11px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5 pt-1">
+                <span>🔒</span>
+                <span>Bu aboneliğe dışarıdan ek bir üyeye görüntüleme izni verilmemiş. Yalnızca oluşturan kişi, ödeyen ve sistem yöneticileri görebilir.</span>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- 4. Masraf Paylaşımı / Ortak Hesap (Family & Friends Sharing) -->
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
         <div class="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
             <div>
@@ -785,7 +880,61 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
         <?php endif; ?>
     </div>
 
-    <!-- 5. Notlar -->
+    <!-- 5. Fiyat Değişim & Zam Geçmişi -->
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
+        <div class="flex items-center justify-between">
+            <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                <span>📈 Fiyat Değişim & Zam Geçmişi</span>
+            </h3>
+            <?php if (!empty($son1YilZam['has_hike'])): ?>
+                <span class="text-xs font-bold px-2.5 py-1 rounded-xl <?= $son1YilZam['is_increase'] ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' ?>">
+                    Son 1 Yılda <?= ($son1YilZam['is_increase'] ? '+' : '') . number_format($son1YilZam['percentage'], 1) ?>%
+                </span>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!empty($fiyatGecmisi)): ?>
+            <div class="space-y-3">
+                <?php foreach ($fiyatGecmisi as $fh): 
+                    $isUp = (float)$fh['new_price'] >= (float)$fh['old_price'];
+                ?>
+                <div class="p-3.5 bg-slate-50 dark:bg-slate-950/60 rounded-2xl border border-slate-200 dark:border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-xl flex items-center justify-center font-bold text-sm <?= $isUp ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' ?>">
+                            <?= $isUp ? '↗' : '↘' ?>
+                        </div>
+                        <div>
+                            <div class="flex items-center gap-2">
+                                <span class="font-bold text-slate-400 line-through"><?= paraFormat($fh['old_price'], $fh['currency']) ?></span>
+                                <span class="text-slate-400">➔</span>
+                                <span class="font-extrabold text-slate-900 dark:text-white text-sm"><?= paraFormat($fh['new_price'], $fh['currency']) ?></span>
+                                <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold <?= $isUp ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20' ?>">
+                                    <?= ($isUp ? '+' : '') . number_format((float)$fh['percentage_change'], 1) ?>%
+                                </span>
+                            </div>
+                            <?php if (!empty($fh['notes'])): ?>
+                                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5"><?= htmlspecialchars($fh['notes']) ?></p>
+                            <?php endif; ?>
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-2 text-[11px] text-slate-400 dark:text-slate-500 sm:text-right">
+                        <span><?= tarihFormat($fh['changed_at'], true) ?></span>
+                        <?php if (!empty($fh['changer_name'])): ?>
+                            <span>• <?= htmlspecialchars($fh['changer_name']) ?></span>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
+        <?php else: ?>
+            <div class="p-5 text-center bg-slate-50/50 dark:bg-slate-950/40 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800/80">
+                <span class="text-xl block mb-1 opacity-60">📊</span>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Henüz bir fiyat güncellemesi kaydedilmedi. Abonelik tutarı düzenlendiğinde veya taahhüt sonrası güncellendiğinde zam ve değişim geçmişi otomatik burada listelenecektir.</p>
+            </div>
+        <?php endif; ?>
+    </div>
+
+    <!-- 6. Notlar -->
     <?php if (!empty($sub['notes'])): ?>
     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-5 shadow-sm">
         <h3 class="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2">Notlar</h3>
@@ -795,15 +944,49 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
 
 </div>
 
-<script nonce="<?= $cspNonce ?>">
+<script>
     let plainPasswordCache = '';
+    const currentSubId = <?= (int)$sub['id'] ?>;
+    let isSifreYukleniyor = false;
 
-    // Şifreyi Master PIN ile Çözme
+    // Güvenli JSON ayrıştırıcı (Sunucu HTML/Hata metni döndürürse temiz hata mesajı üretir)
+    async function guvenliJsonOku(response) {
+        const text = await response.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            console.error("AJAX Yanıtı (JSON Değil):", text);
+            // HTML etiketlerini ve fazla boşlukları temizle
+            const cleanText = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            throw new Error(cleanText || ('Sunucu geçerli bir JSON yanıtı döndürmedi (HTTP ' + response.status + ')'));
+        }
+    }
+
+    // Şifreyi Master PIN veya Giriş Şifresi ile Çözme
     function sifreyiAc(subscriptionId) {
+        if (isSifreYukleniyor) return;
+        subscriptionId = subscriptionId || currentSubId;
         if (plainPasswordCache) {
-            document.getElementById('password_display').textContent = plainPasswordCache;
+            gosterSifre(plainPasswordCache);
             return;
         }
+
+        const showBtn = document.getElementById('show_password_btn');
+        const origContent = showBtn ? showBtn.innerHTML : '';
+        if (showBtn) {
+            showBtn.disabled = true;
+            showBtn.innerHTML = '<span>⏳</span> <span>Kontrol ediliyor...</span>';
+        }
+
+        const restoreBtn = () => {
+            isSifreYukleniyor = false;
+            if (showBtn) {
+                showBtn.disabled = false;
+                showBtn.innerHTML = origContent;
+            }
+        };
+
+        isSifreYukleniyor = true;
 
         // Önce PIN sormadan dene (session'da kayıtlı olabilir) — POST ile gönder
         fetch('ajax.php?action=sifre_getir', {
@@ -811,20 +994,26 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: `id=${subscriptionId}&csrf_token=<?= $_SESSION['csrf_token'] ?>`
         })
-            .then(r => r.json())
+            .then(r => guvenliJsonOku(r))
             .then(res => {
                 if (res.success) {
+                    restoreBtn();
                     gosterSifre(res.password);
                 } else if (res.require_pin) {
                     // PIN Sor
+                    const pinMsg = (res.has_pin === false)
+                        ? 'Master PIN tanımlanmamış. Hesap giriş şifrenizi girerek şifreyi çözebilirsiniz.'
+                        : 'Dijital hesap şifresini görüntülemek için güvenlik Master PIN kodunuz gereklidir.';
+
                     Swal.fire({
-                        title: 'Master PIN Kodunu Girin',
-                        text: 'Dijital hesap şifresini görüntülemek için güvenlik PIN kodunuz gereklidir.',
+                        title: 'Güvenlik Doğrulaması',
+                        text: pinMsg,
                         input: 'password',
                         inputAttributes: {
-                            maxlength: '8',
+                            maxlength: '32',
                             autocapitalize: 'off',
-                            autocorrect: 'off'
+                            autocorrect: 'off',
+                            placeholder: (res.has_pin === false) ? 'Giriş Şifreniz' : 'Master PIN'
                         },
                         showCancelButton: true,
                         confirmButtonText: 'Şifreyi Çöz',
@@ -833,43 +1022,95 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
                         color: document.documentElement.classList.contains('dark') ? '#f8fafc' : '#0f172a'
                     }).then((result) => {
                         if (result.isConfirmed && result.value) {
-                            // PIN'i POST body ile gönder — URL'de görünmesini önlemek için
+                            if (showBtn) {
+                                showBtn.disabled = true;
+                                showBtn.innerHTML = '<span>⏳</span> <span>Çözülüyor...</span>';
+                            }
+                            // PIN'i POST body ile gönder
                             fetch('ajax.php?action=sifre_getir', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                                 body: `id=${subscriptionId}&pin=${encodeURIComponent(result.value)}&csrf_token=<?= $_SESSION['csrf_token'] ?>`
                             })
-                                .then(r2 => r2.json())
+                                .then(r2 => guvenliJsonOku(r2))
                                 .then(res2 => {
+                                    restoreBtn();
                                     if (res2.success) {
                                         gosterSifre(res2.password);
                                         toastBildirim('Şifre başarıyla çözüldü');
                                     } else {
-                                        Swal.fire('Hatalı PIN', res2.message || 'Master PIN kodu geçersiz!', 'error');
+                                        Swal.fire('Doğrulama Başarısız', res2.message || 'Kod geçersiz!', 'error');
                                     }
+                                })
+                                .catch(err => {
+                                    restoreBtn();
+                                    Swal.fire('Hata', 'Sunucu yanıt vermedi: ' + err.message, 'error');
                                 });
+                        } else {
+                            restoreBtn();
                         }
                     });
                 } else {
+                    restoreBtn();
                     Swal.fire('Hata', res.message || 'Şifre çözülemedi.', 'error');
                 }
+            })
+            .catch(err => {
+                restoreBtn();
+                Swal.fire('Bağlantı Hatası', 'Sunucu ile iletişim kurulamadı: ' + err.message, 'error');
             });
     }
 
     function gosterSifre(pass) {
         plainPasswordCache = pass;
         const passElem = document.getElementById('password_display');
-        passElem.textContent = pass;
-        passElem.classList.remove('tracking-widest');
-        document.getElementById('show_password_btn').classList.add('hidden');
+        if (passElem) {
+            passElem.textContent = pass;
+            passElem.classList.remove('tracking-widest');
+        }
+        const showBtn = document.getElementById('show_password_btn');
+        if (showBtn) showBtn.classList.add('hidden');
+
+        const hideBtn = document.getElementById('hide_password_btn');
+        if (hideBtn) hideBtn.classList.remove('hidden');
         
         const copyBtn = document.getElementById('copy_password_btn');
-        copyBtn.classList.remove('hidden');
-        copyBtn.onclick = function() {
-            navigator.clipboard.writeText(pass);
-            toastBildirim('Şifre kopyalandı');
-        };
+        if (copyBtn) {
+            copyBtn.classList.remove('hidden');
+            copyBtn.onclick = function() {
+                navigator.clipboard.writeText(pass);
+                toastBildirim('Şifre kopyalandı');
+            };
+        }
     }
+
+    function gizleSifre() {
+        const passElem = document.getElementById('password_display');
+        if (passElem) {
+            passElem.textContent = '••••••••••••';
+            passElem.classList.add('tracking-widest');
+        }
+        const showBtn = document.getElementById('show_password_btn');
+        if (showBtn) {
+            showBtn.classList.remove('hidden');
+            showBtn.disabled = false;
+        }
+        const hideBtn = document.getElementById('hide_password_btn');
+        if (hideBtn) hideBtn.classList.add('hidden');
+        const copyBtn = document.getElementById('copy_password_btn');
+        if (copyBtn) copyBtn.classList.add('hidden');
+    }
+
+    // Doğrudan event listener ekle (CSP / inline uyumluluğu garantisi)
+    document.addEventListener('DOMContentLoaded', function() {
+        const btn = document.getElementById('show_password_btn');
+        if (btn) {
+            btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                sifreyiAc(currentSubId);
+            });
+        }
+    });
 
     // Ortak Masraf Kişisi Ekleme Modalı
     function ortakEkleModal() {
@@ -1075,6 +1316,48 @@ $toplamTasarruf = $cashback + $toplamTahsilEdilenOrtak;
                         }
                     })
                     .catch(() => Swal.fire('Hata', 'Sunucu ile bağlantı kurulamadı.', 'error'));
+            }
+        });
+    }
+
+    function abonelikIptalEt(subId, baslik) {
+        Swal.fire({
+            title: 'Aboneliği İptal Et',
+            text: `"${baslik}" aboneliğini iptal edildi olarak işaretlemek istiyor musunuz?`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#ef4444',
+            cancelButtonColor: '#64748b',
+            confirmButtonText: 'Evet, İptal Et',
+            cancelButtonText: 'Vazgeç',
+            background: document.documentElement.classList.contains('dark') ? '#0f172a' : '#ffffff',
+            color: document.documentElement.classList.contains('dark') ? '#f8fafc' : '#0f172a'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const formData = new FormData();
+                formData.append('action', 'durum_degistir');
+                formData.append('subscription_id', subId);
+                formData.append('status', 'canceled');
+                formData.append('csrf_token', '<?= $_SESSION['csrf_token'] ?>');
+
+                fetch('ajax.php', { method: 'POST', body: formData })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Başarılı',
+                                text: data.message || 'Abonelik iptal edildi.',
+                                showConfirmButton: false,
+                                timer: 1500,
+                                background: document.documentElement.classList.contains('dark') ? '#0f172a' : '#ffffff',
+                                color: document.documentElement.classList.contains('dark') ? '#f8fafc' : '#0f172a'
+                            }).then(() => window.location.reload());
+                        } else {
+                            Swal.fire('Hata', data.message || 'İşlem gerçekleştirilemedi.', 'error');
+                        }
+                    })
+                    .catch(() => Swal.fire('Hata', 'Sunucuya bağlanılamadı.', 'error'));
             }
         });
     }

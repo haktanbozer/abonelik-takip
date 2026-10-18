@@ -84,7 +84,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($attempt['locked_until'])) {
 
                 sistemLogla("Başarılı Giriş: {$user['username']} ({$user['role']}) ({$ip_address})", 'AUTH');
 
-                header("Location: konum-sec.php");
+                header("Location: secim.php");
                 exit;
             }
         } else {
@@ -118,9 +118,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($attempt['locked_until'])) {
     <link rel="icon" type="image/png" href="icons/favicon.png">
     <link rel="apple-touch-icon" href="icons/icon-192x192.png">
     <meta name="theme-color" content="#0f172a">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script nonce="<?= $cspNonce ?>">
-        tailwind.config = { darkMode: 'class' };
+    <?php if (file_exists(__DIR__ . '/dist/style.css')): ?>
+        <link rel="stylesheet" href="dist/style.css?v=<?= filemtime(__DIR__ . '/dist/style.css') ?>">
+    <?php else: ?>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>tailwind.config = { darkMode: 'class' };</script>
+    <?php endif; ?>
+    <script>
         if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
             document.documentElement.classList.add('dark');
         } else {
@@ -191,7 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($attempt['locked_until'])) {
 
     </div>
 
-    <script nonce="<?= $cspNonce ?>">
+    <script>
         var themeToggleDarkIcon = document.getElementById('theme-toggle-dark-icon');
         var themeToggleLightIcon = document.getElementById('theme-toggle-light-icon');
 

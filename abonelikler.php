@@ -107,6 +107,41 @@ try {
     sistemLogla("Abonelik listeleme hatasi: " . $e->getMessage(), 'ERROR');
     $subscriptions = [];
 }
+
+// Son 1 yılda zamlanan aboneliklerin oranlarını hazırla
+$priceHikes = [];
+try {
+    $oneYearAgo = date('Y-m-d H:i:s', strtotime('-1 year'));
+    $histStmt = $pdo->query("
+        SELECT subscription_id, old_price, new_price, changed_at
+        FROM subscription_price_history
+        WHERE changed_at >= '{$oneYearAgo}'
+        ORDER BY changed_at ASC
+    ");
+    $histRows = $histStmt->fetchAll(PDO::FETCH_ASSOC);
+    $subHikeMap = [];
+    foreach ($histRows as $hr) {
+        $sid = (int)$hr['subscription_id'];
+        if (!isset($subHikeMap[$sid])) {
+            $subHikeMap[$sid] = [
+                'first_old' => (float)$hr['old_price'],
+                'last_new' => (float)$hr['new_price'],
+            ];
+        } else {
+            $subHikeMap[$sid]['last_new'] = (float)$hr['new_price'];
+        }
+    }
+    foreach ($subHikeMap as $sid => $data) {
+        if ($data['first_old'] > 0 && $data['last_new'] > $data['first_old']) {
+            $pct = round((($data['last_new'] - $data['first_old']) / $data['first_old']) * 100, 1);
+            if ($pct > 0) {
+                $priceHikes[$sid] = $pct;
+            }
+        }
+    }
+} catch (Exception $e) {
+    $priceHikes = [];
+}
 ?>
 
 <!-- Ust Baslik & Arama/Filtre Cubugu -->
@@ -299,14 +334,23 @@ try {
                                     🎁 -<?= paraFormat($sub['cashback_amount'], $sub['currency']) ?>
                                 </span>
                             <?php endif; ?>
+                            <?php if (!empty($priceHikes[$sub['id']])): ?>
+                                <span class="ml-1 text-[10px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20" title="Son 1 yılda %<?= $priceHikes[$sub['id']] ?> zamlandı">
+                                    📈 +%<?= $priceHikes[$sub['id']] ?>
+                                </span>
+                            <?php endif; ?>
                             <?php if ($isInstSub): ?>
                                 <span class="text-[10px] text-slate-500 dark:text-slate-400 block font-medium mt-0.5">Toplam: <?= paraFormat($sub['price'], $sub['currency']) ?> (<?= (int)($sub['ins_installment_count'] ?? 1) ?> Taksit)</span>
+                            <?php elseif ($sub['billing_cycle'] === 'annual' && (float)$sub['price'] > 0): ?>
+                                <span class="text-[10px] text-blue-600 dark:text-blue-400 block font-medium mt-0.5" title="Yıllık peşin ödemenin aylık bütçe karşılığı">
+                                    💡 Aylık: ~<?= paraFormat(round((float)$sub['price'] / 12, 2), $sub['currency']) ?>
+                                </span>
                             <?php endif; ?>
                         </div>
                         <div class="text-right">
                             <span class="text-[10px] uppercase font-bold text-slate-400 dark:text-slate-500 block">Periyot</span>
                             <span class="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                                <?= $isInstSub ? 'Aylık Taksit' : ($sub['billing_cycle'] === 'monthly' ? 'Aylık' : ($sub['billing_cycle'] === 'annual' ? 'Yıllık' : ucfirst($sub['billing_cycle']))) ?>
+                                <?= $isInstSub ? 'Aylık Taksit' : ($sub['billing_cycle'] === 'monthly' ? 'Aylık' : ($sub['billing_cycle'] === 'annual' ? 'Yıllık (Peşin)' : ucfirst($sub['billing_cycle']))) ?>
                             </span>
                         </div>
                     </div>
@@ -488,7 +532,7 @@ try {
 
 <?php endif; ?>
 
-<script nonce="<?= $cspNonce ?>">
+<script>
     function silOnay(id, baslik) {
         Swal.fire({
             title: 'Aboneliği Sil?',

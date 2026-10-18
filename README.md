@@ -58,21 +58,40 @@ Hem dijital platformlarınızı (Netflix, Spotify, ChatGPT vb.), hem ev faturala
 * **Kişisel Bütçe Dağılımı:** Ana sayfada kimin ne kadar aylık sabit gider üstlendiği (tutar, yüzde ve abonelik adedi) grafiksel olarak raporlanır.
 * **Kişiye Özel Bildirimler:** Fatura ve vade uyarıları doğrudan ödemeyi üstlenen üyeye gönderilir.
 
-### 8. 📍 Mekan & Kapsam İzolasyonu (Locations)
-* İstanbul, Sakarya, Yazlık, Ofis veya Dijital gibi mekanlar tanımlayabilme.
-* Kullanıcı bazlı mekan yetkilendirmesi (`location_access`).
-* Mekan seçildiğinde yalnızca o mekana uygun kategorilerin listelenmesi (Türkçe harf uyuşmazlığına karşı dayanıklı filtreleme).
+### 8. 🎯 Aylık Bütçe Limiti & Harcama Uyarı Çubuğu
+* Profil sayfasından belirlenebilen kişisel **"Aylık Hedef Bütçe Limiti"** (`monthly_budget`).
+* Ana sayfada gerçek net harcamanızın bütçenize oranını canlı hesaplayan dinamik renkli ilerleme çubuğu:
+  * 🟢 **Normal (%0 - %75):** Güvenli harcama bandı (Zümrüt yeşili).
+  * 🟡 **Dikkat (%75 - %99):** Bütçe sınırına yaklaşma uyarısı (Amber sarısı).
+  * 🔴 **Limit Aşımı (%100+):** Bütçe aşım alarmı (Canlı kırmızı).
 
-### 9. 📅 İnteraktif Nakit Akışı & Fatura Takvimi
+### 9. 📈 Son 1 Yıldaki Fiyat Değişimi & Dinamik Zam Rozetleri
+* Her abonelik düzenlendiğinde veya fiyatı güncellendiğinde otomatik olarak `subscription_price_history` tablosuna tarihçeli kayıt düşülür.
+* Abonelik kartlarında ve detay sayfasında son 12 aydaki kümülatif fiyat değişimini gösteren dinamik rozetler:
+  * `+%25` Kırmızı rozet: Son 1 yılda fiyat artışı.
+  * `-%10` Yeşil rozet: İndirim veya paket düşürme.
+* Detay sayfasında eski fiyat, yeni fiyat, değişim oranı ve güncellenme tarihini içeren detaylı zam tablosu.
+
+### 10. 👥 Evrensel Erişim & Aile Yetkilendirmesi
+* Yalnızca dijital platformlar değil; elektrik, su, doğalgaz, internet, sigorta ve diğer tüm kategorilerdeki abonelikler için aile üyelerine görüntüleme izni (`subscription_access`).
+* İzni olan kullanıcılar abonelik detaylarını inceleyebilir ve yüklenmiş fatura/poliçe eklerini güvenli biçimde indirebilir.
+* IDOR ve yetki denetimi sayesinde izni olmayan kullanıcılar diğer üyelerin fatura detaylarına veya eklerine erişemez.
+
+### 11. 📍 Mekan & Kapsam İzolasyonu (Locations)
+* Evim, Ofis, Yazlık veya Kişisel & Dijital gibi mekanlar tanımlayabilme (`mekan-yonetimi.php`).
+* Kullanıcı bazlı mekan yetkilendirmesi (`location_access`).
+* Mekan seçildiğinde yalnızca o mekana uygun kategorilerin dinamik listelenmesi (Türkçe harf ve büyük/küçük harf duyarlı akıllı eşleşme).
+
+### 12. 📅 İnteraktif Nakit Akışı & Fatura Takvimi
 * Ay boyunca hangi gün ne kadar para çıkacağını gösteren interaktif takvim ızgarası.
 * Fatura kesim günleri ve son ödeme günleri farklı renklerde görselleştirilir.
 
-### 10. 🤖 Otomatik Bildirim Motoru (`cron-mail.php`)
+### 13. 🤖 Otomatik Bildirim Motoru (`cron-mail.php`)
 * cPanel veya Linux crontab üzerinden her sabah arka planda otomatik çalışır.
 * Fatura, taahhüt ve deneme sürümü uyarılarını doğrudan ilgili üyeye HTML e-posta olarak iletir.
 * Gömülü **PHPMailer (v6.9)** ile Composer veya harici kütüphane gerektirmez.
 
-### 11. 📱 PWA (Progressive Web App) Desteği
+### 14. 📱 PWA (Progressive Web App) Desteği
 * Android, iOS ve masaüstünde yerel uygulama gibi kurulabilir.
 * Service Worker ve `manifest.json` önbellek altyapısı ile çevrimdışı fallback (`offline.html`) sayfası sunar.
 
@@ -181,9 +200,10 @@ GET https://alanadiniz.com/cron-mail.php?token=CRON_SECRET_DEGERINIZ
 
 ```
 abonelik-takip/
-├── PHPMailer/              # Gömülü PHPMailer v6.9 kütüphanesi
+├── components/             # Yeniden kullanılabilir UI bileşenleri
 ├── icons/                  # PWA ve favicon uygulama ikonları
 ├── logs/                   # Sistem ve güvenlik logları (.htaccess ile korumalı)
+├── PHPMailer/              # Gömülü PHPMailer v6.9 kütüphanesi
 ├── sessions/               # Güvenli PHP oturum dosyaları (.htaccess ile korumalı)
 ├── uploads/                # Yüklenen poliçe ve fatura belgeleri (.htaccess ile korumalı)
 │   └── documents/
@@ -192,26 +212,29 @@ abonelik-takip/
 ├── .gitattributes          # Satır sonu (LF) ve ikili dosya normalizasyonu
 ├── .gitignore              # Hassas verileri koruyan Git kuralları
 ├── .htaccess               # Apache güvenlik ve yönlendirme kuralları
+├── build-css.bat           # Tailwind CSS derleme betiği
 ├── CONTRIBUTING.md         # Katkıda bulunma ilkeleri ve PR rehberi
 ├── LICENSE                 # MIT Açık Kaynak Lisansı
 ├── README.md               # Detaylı sistem dokümantasyonu
 ├── SECURITY.md             # Güvenlik politikası ve açık bildirim yönergeleri
 ├── database.sql            # Temiz, hazır veritabanı şeması ve başlangıç verileri
-├── db.php                  # Veritabanı bağlantısı, migration'lar ve çekirdek fonksiyonlar
+├── db.php                  # Veritabanı bağlantısı ve çekirdek fonksiyonlar
+├── migrations.php          # Otomatik versiyon ve şema göç yöneticisi (v1..v20)
 ├── header.php              # Navigasyon, acil bildirimler ve CSP başlıkları
 ├── footer.php              # Sayfa altlığı, tema yöneticisi ve scriptler
 ├── sidebar.php             # Yönetim yan menüsü
-├── index.php               # Ana gösterge paneli (Dashboard) ve bütçe dağılımı
+├── index.php               # Ana gösterge paneli (Dashboard), bütçe limiti ve dağılım
 ├── abonelikler.php         # Abonelik ve fatura listeleme / filtreleme
 ├── abonelik-ekle.php       # Yeni abonelik / fatura ekleme formu
 ├── abonelik-duzenle.php    # Abonelik güncelleme formu
 ├── abonelik-detay.php      # Abonelik detay sayfası ve Master PIN çözücü
 ├── fatura-takvimi.php      # İnteraktif aylık nakit akışı takvimi
 ├── kredi-kartlari.php      # Kredi kartları ve banka hesapları yönetimi
-├── konum-sec.php           # Aktif mekan/kart hızlı geçiş ekranı
-├── kategoriler.php         # Kategori yönetimi (Admin)
+├── secim.php               # Aktif portföy/alan/kart hızlı geçiş ekranı
+├── mekan-yonetimi.php      # Konum ve mekan yönetimi (Ekle / Düzenle / Sil)
+├── kategoriler.php         # Kategori ve tür yönetimi (Admin)
 ├── admin.php               # Kullanıcı ve mekan yetkilendirme paneli (Admin)
-├── profil.php              # Kullanıcı profili, parola ve Master PIN güncelleme
+├── profil.php              # Kullanıcı profili, bütçe limiti, parola ve Master PIN
 ├── bildirim-ayarlari.php   # Bildirim eşikleri ve SMTP ayarları
 ├── bildirim-gecmisi.php    # Gönderilen e-posta günlükleri
 ├── log-goruntule.php       # Sistem logları denetim ekranı (Admin)
@@ -219,6 +242,7 @@ abonelik-takip/
 ├── ajax.php                # Güvenli merkezi AJAX işleyicisi
 ├── belge-indir.php         # Path-traversal ve yetki kontrollü belge indirme
 ├── excel-export.php        # Abonelik listesini Excel formatında dışa aktarma
+├── tailwind.config.js      # Tailwind CSS yapılandırması
 ├── sw.js                   # PWA Service Worker
 ├── manifest.json           # PWA Web Uygulama Manifesti
 ├── offline.html            # Çevrimdışı durum bilgilendirme sayfası
@@ -252,7 +276,7 @@ git push -u origin main
 ```
 
 > [!NOTE]
-> `.env`, oturum dosyaları (`sessions/`), log kayıtları (`logs/`) ve yüklenen gerçek faturalar (`uploads/documents/`) `.gitignore` ile korunmaktadır; GitHub'a asla yüklenmez.
+> `.env`, kişisel veritabanı dökümleri (`*.sql`), derleme araçları (`tools/`), oturum dosyaları (`sessions/`), sistem logları (`logs/`) ve yüklenen gerçek faturalar (`uploads/documents/`) `.gitignore` ile korunmaktadır; GitHub'a asla yüklenmez. Depoya yalnızca temiz şablon olan `.env.example` ve boş şema dosyası `database.sql` dahil edilir.
 
 ---
 

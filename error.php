@@ -19,11 +19,13 @@ $message = $messages[$code] ?? $messages['general'];
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= htmlspecialchars($title) ?> - Abonelik Takip</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <?php if (file_exists(__DIR__ . '/dist/style.css')): ?>
+        <link rel="stylesheet" href="dist/style.css?v=<?= filemtime(__DIR__ . '/dist/style.css') ?>">
+    <?php else: ?>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script>tailwind.config = { darkMode: 'class' };</script>
+    <?php endif; ?>
     <script>
-        tailwind.config = {
-            darkMode: 'class'
-        };
         if (localStorage.getItem('color-theme') === 'dark') {
             document.documentElement.classList.add('dark');
         } else {

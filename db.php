@@ -13,7 +13,20 @@ if (!ob_get_level()) {
     ob_start();
 }
 if (!headers_sent()) {
-    header('Content-Type: text/html; charset=UTF-8');
+    $currentScriptName = basename($_SERVER['SCRIPT_NAME'] ?? $_SERVER['PHP_SELF'] ?? '');
+    if ($currentScriptName !== 'ajax.php') {
+        header('Content-Type: text/html; charset=UTF-8');
+    }
+    header('X-Content-Type-Options: nosniff');
+    header('X-Frame-Options: SAMEORIGIN');
+    header('Referrer-Policy: strict-origin-when-cross-origin');
+    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+
+    $isHttpsCheck = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') || 
+                    (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
+    if ($isHttpsCheck) {
+        header('Strict-Transport-Security: max-age=31536000; includeSubDomains');
+    }
 }
 
 // 1. Kurulum Kontrolü: .env yoksa install.php'ye yönlendir
@@ -39,6 +52,11 @@ if (is_writable($sessionDir)) {
 
 ini_set('session.use_strict_mode', 1);
 ini_set('session.use_only_cookies', 1);
+
+// Oturum Çerez Adını Projeye Özel Yap (Aynı domaindeki stok takip vb. projelerle çakışmayı %100 engeller)
+if (session_status() === PHP_SESSION_NONE) {
+    session_name('ABONELIK_SESSID');
+}
 
 $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') || 
            (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https');
@@ -126,510 +144,86 @@ try {
         PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci"
     ]);
 
-    // Otomatik Şema Güncellemesi: role ve status alanları
-    if (empty($_SESSION['_abonelik_mig_v1_roles'])) {
-        try {
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN `role` ENUM('ADMIN', 'USER') NOT NULL DEFAULT 'USER' AFTER `master_pin_hash`");
-        } catch (Exception $e) {}
-        try {
-            $pdo->exec("ALTER TABLE `users` ADD COLUMN `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active' AFTER `role`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v1_roles'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v2: locations tablosu ve location_id
-    if (empty($_SESSION['_abonelik_mig_v2_locations'])) {
-        try {
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `locations` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `user_id` INT NOT NULL,
-                    `name` VARCHAR(100) NOT NULL,
-                    `icon` VARCHAR(50) DEFAULT 'home',
-                    `color` VARCHAR(30) DEFAULT 'blue',
-                    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    INDEX (`user_id`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-            $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `location_id` INT NULL AFTER `user_id`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v2_locations'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v3: payer_user_id, subscription_access ve admin bildirim tercihi
-    if (empty($_SESSION['_abonelik_mig_v3_payer_permissions'])) {
-        try {
-            $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `payer_user_id` INT NULL AFTER `user_id`");
-            $pdo->exec("UPDATE `subscriptions` SET `payer_user_id` = `user_id` WHERE `payer_user_id` IS NULL");
-        } catch (Exception $e) {}
-        try {
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `subscription_access` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `subscription_id` INT NOT NULL,
-                    `user_id` INT NOT NULL,
-                    `can_view_credentials` TINYINT(1) DEFAULT 1,
-                    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY `sub_user_unique` (`subscription_id`, `user_id`),
-                    INDEX (`subscription_id`),
-                    INDEX (`user_id`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {}
-        try {
-            $pdo->exec("ALTER TABLE `notification_settings` ADD COLUMN `admin_receive_all_notifications` TINYINT(1) DEFAULT 1 AFTER `email_enabled`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v3_payer_permissions'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v4: Otomatik Ödeme Bilgileri (Utility & Telecom)
-    if (empty($_SESSION['_abonelik_mig_v4_autopay'])) {
-        try {
-            $pdo->exec("ALTER TABLE `subscription_utility_details` 
-                ADD COLUMN `is_auto_pay` TINYINT(1) DEFAULT 0 AFTER `due_day`,
-                ADD COLUMN `auto_pay_type` ENUM('credit_card', 'bank_account', 'other') DEFAULT 'credit_card' AFTER `is_auto_pay`,
-                ADD COLUMN `auto_pay_bank` VARCHAR(100) NULL AFTER `auto_pay_type`,
-                ADD COLUMN `auto_pay_source_title` VARCHAR(150) NULL AFTER `auto_pay_bank`");
-        } catch (Exception $e) {}
-        try {
-            $pdo->exec("ALTER TABLE `subscription_telecom_details` 
-                ADD COLUMN `is_auto_pay` TINYINT(1) DEFAULT 0 AFTER `device_rental_fee`,
-                ADD COLUMN `auto_pay_type` ENUM('credit_card', 'bank_account', 'other') DEFAULT 'credit_card' AFTER `is_auto_pay`,
-                ADD COLUMN `auto_pay_bank` VARCHAR(100) NULL AFTER `auto_pay_type`,
-                ADD COLUMN `auto_pay_source_title` VARCHAR(150) NULL AFTER `auto_pay_bank`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v4_autopay'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v5: Kredi Kartları, Sigorta/Poliçeler ve Bireysel Emeklilik (BES)
-    if (empty($_SESSION['_abonelik_mig_v5_cards_insurance_bes'])) {
-        try {
-            // 1. Kategoriler tablosuna insurance ve bes tipleri ekle
-            $pdo->exec("ALTER TABLE `categories` MODIFY COLUMN `type` ENUM('digital', 'utility', 'telecom', 'vehicle', 'general', 'insurance', 'bes') NOT NULL DEFAULT 'digital'");
-            
-            // Varsayılan Sigorta ve BES Kategorileri Ekle
-            $newCategories = [
-                ['Kasko & Araç Sigortası', 'kasko-arac-sigortasi', 'insurance', 'shield', 'rose', 13],
-                ['DASK & Konut Sigortası', 'dask-konut-sigortasi', 'insurance', 'home', 'amber', 14],
-                ['Özel & Tamamlayıcı Sağlık', 'saglik-sigortasi', 'insurance', 'activity', 'emerald', 15],
-                ['Bireysel Emeklilik (BES)', 'bireysel-emeklilik-bes', 'bes', 'trending-up', 'cyan', 16]
-            ];
-            $catIns = $pdo->prepare("INSERT IGNORE INTO `categories` (`name`, `slug`, `type`, `icon`, `color`, `sort_order`) VALUES (?, ?, ?, ?, ?, ?)");
-            foreach ($newCategories as $nc) {
-                $catIns->execute($nc);
+    // 5.1. Şema ve Migration Yönetimi (Performanslı ve merkezi schema_migrations sistemi)
+    if (file_exists(__DIR__ . '/migrations.php')) {
+        if (empty($_SESSION['_abonelik_schema_version']) || $_SESSION['_abonelik_schema_version'] < 20) {
+            require_once __DIR__ . '/migrations.php';
+            if (function_exists('semaGuncelle')) {
+                semaGuncelle($pdo);
             }
-        } catch (Exception $e) {}
-
-        try {
-            // 2. Kredi Kartları Tablosu
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `credit_cards` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `user_id` INT NOT NULL,
-                    `bank_name` VARCHAR(100) NOT NULL,
-                    `card_name` VARCHAR(100) NOT NULL,
-                    `card_network` ENUM('visa', 'mastercard', 'troy', 'amex') DEFAULT 'mastercard',
-                    `card_last_4` VARCHAR(4) NULL,
-                    `statement_cut_day` TINYINT UNSIGNED NOT NULL,
-                    `due_day` TINYINT UNSIGNED NOT NULL,
-                    `limit_amount` DECIMAL(12, 2) NULL,
-                    `color` VARCHAR(50) DEFAULT 'from-slate-800 to-slate-950',
-                    `is_active` TINYINT(1) DEFAULT 1,
-                    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                    INDEX (`user_id`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {}
-
-        try {
-            // 3. Sigorta & Poliçe Detay Tablosu
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `subscription_insurance_details` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `subscription_id` INT NOT NULL UNIQUE,
-                    `insurance_type` VARCHAR(50) DEFAULT 'traffic',
-                    `company_name` VARCHAR(150) NULL,
-                    `policy_no` VARCHAR(100) NULL,
-                    `insured_item` VARCHAR(150) NULL,
-                    `agency_name` VARCHAR(150) NULL,
-                    `agency_phone` VARCHAR(50) NULL,
-                    `policy_start_date` DATE NULL,
-                    `policy_end_date` DATE NULL,
-                    `payment_type` ENUM('single', 'installment') DEFAULT 'single',
-                    `installment_count` INT DEFAULT 1,
-                    `installment_amount` DECIMAL(10, 2) NULL,
-                    INDEX (`subscription_id`),
-                    INDEX (`policy_end_date`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {}
-
-        try {
-            // 4. Bireysel Emeklilik (BES) Detay Tablosu
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `subscription_bes_details` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `subscription_id` INT NOT NULL UNIQUE,
-                    `company_name` VARCHAR(150) NULL,
-                    `contract_no` VARCHAR(100) NULL,
-                    `payment_day` TINYINT UNSIGNED NULL,
-                    `owner_relation` VARCHAR(100) DEFAULT 'self',
-                    `auto_pay_source` VARCHAR(150) NULL,
-                    INDEX (`subscription_id`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {}
-
-        try {
-            // 5. subscriptions tablosuna credit_card_id bağlama
-            $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `credit_card_id` INT NULL AFTER `payment_method_id`");
-        } catch (Exception $e) {}
-
-        $_SESSION['_abonelik_mig_v5_cards_insurance_bes'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v6: Poliçe & Sözleşme Belge Eki (PDF / Görsel)
-    if (empty($_SESSION['_abonelik_mig_v6_attachments'])) {
-        try {
-            $pdo->exec("ALTER TABLE `subscriptions` 
-                ADD COLUMN `attachment_file` VARCHAR(255) NULL AFTER `notes`,
-                ADD COLUMN `attachment_name` VARCHAR(255) NULL AFTER `attachment_file`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v6_attachments'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v7: Sigorta & BES Alan Sağlamlaştırma
-    if (empty($_SESSION['_abonelik_mig_v7_schema_sync'])) {
-        try {
-            $pdo->exec("ALTER TABLE `subscription_insurance_details` 
-                ADD COLUMN `insured_item` VARCHAR(150) NULL AFTER `policy_no`,
-                ADD COLUMN `payment_type` ENUM('single', 'installment') DEFAULT 'single' AFTER `policy_end_date`,
-                ADD COLUMN `installment_count` INT DEFAULT 1 AFTER `payment_type`,
-                ADD COLUMN `installment_amount` DECIMAL(10, 2) NULL AFTER `installment_count`");
-        } catch (Exception $e) {}
-        try {
-            $pdo->exec("ALTER TABLE `subscription_bes_details` 
-                ADD COLUMN `owner_relation` VARCHAR(100) DEFAULT 'Kendim' AFTER `payment_day`,
-                ADD COLUMN `auto_pay_source` VARCHAR(150) NULL AFTER `owner_relation`");
-        } catch (Exception $e) {}
-        $_SESSION['_abonelik_mig_v7_schema_sync'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v8: Nihai Şema ve Alan Sağlamlaştırma (Final Sync)
-    if (empty($_SESSION['_abonelik_mig_v8_final_sync'])) {
-        try {
-            $sutunVarMi = function($tablo, $sutun) use ($pdo) {
-                try {
-                    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$tablo}` LIKE ?");
-                    $stmt->execute([$sutun]);
-                    return (bool)$stmt->fetch();
-                } catch (Exception $e) {
-                    return false;
-                }
-            };
-
-            // 1. `subscriptions` Tablosu
-            try {
-                $pdo->exec("ALTER TABLE `subscriptions` MODIFY COLUMN `billing_cycle` ENUM('monthly', 'annual', 'quarterly', 'semi_annual', 'one_time') DEFAULT 'monthly'");
-            } catch (Exception $e) {}
-
-            if (!$sutunVarMi('subscriptions', 'is_auto_pay')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `is_auto_pay` TINYINT(1) DEFAULT 0 AFTER `credit_card_id`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscriptions', 'auto_pay_type')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `auto_pay_type` ENUM('credit_card', 'bank_account', 'other') DEFAULT NULL AFTER `is_auto_pay`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscriptions', 'attachment_file')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `attachment_file` VARCHAR(255) NULL AFTER `notes`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscriptions', 'attachment_name')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `attachment_name` VARCHAR(255) NULL AFTER `attachment_file`");
-                } catch (Exception $e) {}
-            }
-
-            // 2. `subscription_telecom_details` Tablosu
-            if (!$sutunVarMi('subscription_telecom_details', 'is_auto_pay')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_telecom_details` ADD COLUMN `is_auto_pay` TINYINT(1) DEFAULT 0 AFTER `device_rental_fee`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_telecom_details', 'auto_pay_type')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_telecom_details` ADD COLUMN `auto_pay_type` ENUM('credit_card', 'bank_account', 'other') DEFAULT 'credit_card' AFTER `is_auto_pay`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_telecom_details', 'auto_pay_bank')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_telecom_details` ADD COLUMN `auto_pay_bank` VARCHAR(100) NULL AFTER `auto_pay_type`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_telecom_details', 'auto_pay_source_title')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_telecom_details` ADD COLUMN `auto_pay_source_title` VARCHAR(150) NULL AFTER `auto_pay_bank`");
-                } catch (Exception $e) {}
-            }
-
-            // 3. `subscription_utility_details` Tablosu
-            if (!$sutunVarMi('subscription_utility_details', 'is_auto_pay')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_utility_details` ADD COLUMN `is_auto_pay` TINYINT(1) DEFAULT 0 AFTER `due_day`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_utility_details', 'auto_pay_type')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_utility_details` ADD COLUMN `auto_pay_type` ENUM('credit_card', 'bank_account', 'other') DEFAULT 'credit_card' AFTER `is_auto_pay`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_utility_details', 'auto_pay_bank')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_utility_details` ADD COLUMN `auto_pay_bank` VARCHAR(100) NULL AFTER `auto_pay_type`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_utility_details', 'auto_pay_source_title')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_utility_details` ADD COLUMN `auto_pay_source_title` VARCHAR(150) NULL AFTER `auto_pay_bank`");
-                } catch (Exception $e) {}
-            }
-
-            // 4. `subscription_insurance_details` Tablosu
-            if (!$sutunVarMi('subscription_insurance_details', 'insured_item')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_insurance_details` ADD COLUMN `insured_item` VARCHAR(150) NULL AFTER `policy_no`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_insurance_details', 'payment_type')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_insurance_details` ADD COLUMN `payment_type` ENUM('single', 'installment') DEFAULT 'single' AFTER `policy_end_date`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_insurance_details', 'installment_count')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_insurance_details` ADD COLUMN `installment_count` INT DEFAULT 1 AFTER `payment_type`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_insurance_details', 'installment_amount')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_insurance_details` ADD COLUMN `installment_amount` DECIMAL(10, 2) NULL AFTER `installment_count`");
-                } catch (Exception $e) {}
-            }
-
-            // 5. `subscription_bes_details` Tablosu
-            if (!$sutunVarMi('subscription_bes_details', 'owner_relation')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_bes_details` ADD COLUMN `owner_relation` VARCHAR(100) DEFAULT 'Kendim' AFTER `payment_day`");
-                } catch (Exception $e) {}
-            }
-            if (!$sutunVarMi('subscription_bes_details', 'auto_pay_source')) {
-                try {
-                    $pdo->exec("ALTER TABLE `subscription_bes_details` ADD COLUMN `auto_pay_source` VARCHAR(150) NULL AFTER `owner_relation`");
-                } catch (Exception $e) {}
-            }
-
-            // 6. `notification_logs` Tablosu ENUM Güncellemesi
-            try {
-                $pdo->exec("ALTER TABLE `notification_logs` MODIFY COLUMN `notification_type` ENUM('trial_end','commitment_end','payment_due','insurance_renewal','admin_copy_trial','admin_copy_comm','admin_copy_due','monthly_summary','system') NOT NULL");
-            } catch (Exception $e) {}
-
-            // 7. Master PIN Brute-Force Koruma Tablosu (`pin_attempts`)
-            try {
-                $pdo->exec("
-                    CREATE TABLE IF NOT EXISTS `pin_attempts` (
-                        `user_id` INT NOT NULL PRIMARY KEY,
-                        `attempts` INT DEFAULT 1,
-                        `last_attempt` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        `locked_until` DATETIME NULL
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-                ");
-            } catch (Exception $e) {}
-
-            $_SESSION['_abonelik_mig_v8_final_sync'] = true;
-        } catch (Exception $e) {
-            sistemLogla("Migration v8 Hatası: " . $e->getMessage(), 'WARNING');
         }
     }
 
-    // Otomatik Şema Güncellemesi v9: Güvenlik ve Bildirim ENUM Senkronizasyonu
-    if (empty($_SESSION['_abonelik_mig_v9_security_sync'])) {
-        try {
-            // 1. Master PIN Brute-Force Koruma Tablosu
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `pin_attempts` (
-                    `user_id` INT NOT NULL PRIMARY KEY,
-                    `attempts` INT DEFAULT 1,
-                    `last_attempt` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    `locked_until` DATETIME NULL
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {
-            sistemLogla("Migration v9 pin_attempts hatası: " . $e->getMessage(), 'WARNING');
-        }
+    // 5.2. categories.type ENUM kısıtlamasını kaldır ve Vergi türüyle senkronize et
+    try {
+        // ENUM kısıtlamasını kaldırarak VARCHAR(50) yap (yoksa 'tax' veya özel türler kaydedilemez)
+        $pdo->exec("ALTER TABLE `categories` MODIFY COLUMN `type` VARCHAR(50) NOT NULL DEFAULT 'general'");
 
-        try {
-            // 2. notification_logs tablosundaki notification_type ENUM güncellemesi
-            $pdo->exec("
-                ALTER TABLE `notification_logs` MODIFY COLUMN `notification_type` 
-                ENUM('trial_end','commitment_end','payment_due','insurance_renewal','admin_copy_trial','admin_copy_comm','admin_copy_due','monthly_summary','system') NOT NULL
-            ");
-        } catch (Exception $e) {
-            sistemLogla("Migration v9 notification_logs ENUM hatası: " . $e->getMessage(), 'WARNING');
-        }
+        // category_types tablosunda 'tax' türünün tanımlı olduğundan emin ol
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS `category_types` (
+                `type_key` VARCHAR(50) NOT NULL PRIMARY KEY,
+                `name` VARCHAR(100) NOT NULL,
+                `icon` VARCHAR(10) DEFAULT '📌',
+                `badge_color` VARCHAR(50) DEFAULT 'blue',
+                `sort_order` INT DEFAULT 0,
+                `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+        $pdo->exec("
+            INSERT INTO `category_types` (`type_key`, `name`, `icon`, `badge_color`, `sort_order`) 
+            VALUES ('tax', 'Vergi', '💰', 'rose', 8)
+            ON DUPLICATE KEY UPDATE `name` = 'Vergi', `icon` = '💰', `badge_color` = 'rose'
+        ");
 
-        $_SESSION['_abonelik_mig_v9_security_sync'] = true;
-    }
+        // Eğer veritabanında 'vergi' adında ayrı bir tür anahtarı açılmışsa, onu da 'tax' ile birleştir
+        $pdo->exec("UPDATE `categories` SET `type` = 'tax' WHERE `type` = 'vergi'");
+        $pdo->exec("DELETE FROM `category_types` WHERE `type_key` = 'vergi'");
 
-    // Otomatik Şema Güncellemesi v10: Şifre Değişimi ve Oturum Düşürme (Session Invalidation)
-    if (empty($_SESSION['_abonelik_mig_v10_session_invalidation'])) {
-        try {
-            $sutunVarMi = function($tablo, $sutun) use ($pdo) {
-                try {
-                    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$tablo}` LIKE ?");
-                    $stmt->execute([$sutun]);
-                    return (bool)$stmt->fetch();
-                } catch (Exception $e) {
-                    return false;
-                }
-            };
+        // Vergi / Maliye / GSS isimli kategorileri 'tax' türüne bağla (Motorlu Taşıtlar Vergisi araç grubunda kalmalı)
+        $pdo->exec("
+            UPDATE `categories` 
+            SET `type` = 'tax' 
+            WHERE (LOWER(`name`) LIKE '%vergi%' OR LOWER(`slug`) LIKE '%vergi%' OR LOWER(`name`) LIKE '%maliye%' OR `name` = 'GSS' OR LOWER(`slug`) = 'gss')
+              AND LOWER(`name`) NOT LIKE '%motorlu%' AND LOWER(`slug`) NOT LIKE '%motorlu%' AND LOWER(`slug`) NOT LIKE '%mtv%'
+        ");
 
-            if (!$sutunVarMi('users', 'password_changed_at')) {
-                $pdo->exec("ALTER TABLE `users` ADD COLUMN `password_changed_at` DATETIME NULL AFTER `updated_at`");
-            }
+        // Motorlu Taşıtlar Vergisi (MTV) kategorisini 'vehicle' (Araç) grubuna geri al
+        $pdo->exec("
+            UPDATE `categories` 
+            SET `type` = 'vehicle' 
+            WHERE LOWER(`name`) LIKE '%motorlu%' OR LOWER(`slug`) LIKE '%motorlu%' OR LOWER(`slug`) LIKE '%mtv%'
+        ");
 
-            try {
-                $pdo->exec("ALTER TABLE `subscriptions` ADD KEY `credit_card_id` (`credit_card_id`)");
-            } catch (Exception $e) {}
-            try {
-                $pdo->exec("ALTER TABLE `subscriptions` ADD KEY `payment_method_id` (`payment_method_id`)");
-            } catch (Exception $e) {}
-        } catch (Exception $e) {
-            sistemLogla("Migration v10 password_changed_at hatası: " . $e->getMessage(), 'WARNING');
-        }
+        // Varsa boş veya geçersiz türleri general yap
+        $pdo->exec("UPDATE `categories` SET `type` = 'general' WHERE `type` = '' OR `type` IS NULL");
 
-        $_SESSION['_abonelik_mig_v10_session_invalidation'] = true;
-    }
+        // Vergi adlı mekanın ikonunu 'tax' olarak güncelle
+        $pdo->exec("
+            UPDATE `locations` 
+            SET `icon` = 'tax' 
+            WHERE (LOWER(`name`) LIKE '%vergi%' OR LOWER(`name`) LIKE '%tax%') 
+              AND (`icon` = 'chart' OR `icon` = 'home' OR `icon` = '' OR `icon` IS NULL)
+        ");
 
-    // Otomatik Şema Güncellemesi v11: Mekan & Konum Üye Yetkilendirmesi (location_access)
-    if (empty($_SESSION['_abonelik_mig_v11_location_access'])) {
-        try {
-            $pdo->exec("
-                CREATE TABLE IF NOT EXISTS `location_access` (
-                    `id` INT AUTO_INCREMENT PRIMARY KEY,
-                    `location_id` INT NOT NULL,
-                    `user_id` INT NOT NULL,
-                    `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE KEY `loc_user_unique` (`location_id`, `user_id`),
-                    INDEX (`location_id`),
-                    INDEX (`user_id`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-            ");
-        } catch (Exception $e) {
-            sistemLogla("Migration v11 location_access hatası: " . $e->getMessage(), 'WARNING');
-        }
-        $_SESSION['_abonelik_mig_v11_location_access'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v12: subscription_shares tablosuna user_id sütunu ve indeksi
-    if (empty($_SESSION['_abonelik_mig_v12_shares_userid'])) {
-        try {
-            $sutunVarMi = function($tablo, $sutun) use ($pdo) {
-                try {
-                    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$tablo}` LIKE ?");
-                    $stmt->execute([$sutun]);
-                    return (bool)$stmt->fetch();
-                } catch (Exception $e) {
-                    return false;
-                }
-            };
-
-            if (!$sutunVarMi('subscription_shares', 'user_id')) {
-                $pdo->exec("ALTER TABLE `subscription_shares` ADD COLUMN `user_id` INT NULL AFTER `subscription_id`, ADD KEY `user_id` (`user_id`)");
-            }
-        } catch (Exception $e) {
-            sistemLogla("Migration v12 subscription_shares hatası: " . $e->getMessage(), 'WARNING');
-        }
-        $_SESSION['_abonelik_mig_v12_shares_userid'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v12: Nakit İade / Cashback Alanı (cashback_amount)
-    if (empty($_SESSION['_abonelik_mig_v12_cashback'])) {
-        try {
-            $sutunVarMi = function($tablo, $sutun) use ($pdo) {
-                try {
-                    $stmt = $pdo->prepare("SHOW COLUMNS FROM `{$tablo}` LIKE ?");
-                    $stmt->execute([$sutun]);
-                    return (bool)$stmt->fetch();
-                } catch (Exception $e) {
-                    return false;
-                }
-            };
-
-            if (!$sutunVarMi('subscriptions', 'cashback_amount')) {
-                $pdo->exec("ALTER TABLE `subscriptions` ADD COLUMN `cashback_amount` DECIMAL(10,2) DEFAULT 0.00 AFTER `price`");
-            }
-        } catch (Exception $e) {
-            sistemLogla("Migration v12 cashback_amount hatası: " . $e->getMessage(), 'WARNING');
-        }
-        $_SESSION['_abonelik_mig_v12_cashback'] = true;
-    }
-
-    // Otomatik Şema Güncellemesi v14: Taksitli Sigorta / Poliçelerde Aylık Ödeme Döngüsü ve Tarih Normalizasyonu
-    if (empty($_SESSION['_abonelik_mig_v14_insurance_installments'])) {
-        try {
-            // Taksitli sigortaların fatura döngüsünü otomatik 'monthly' (Aylık) yap
-            $pdo->exec("
-                UPDATE subscriptions s
-                JOIN categories c ON s.category_id = c.id
-                JOIN subscription_insurance_details ins ON s.id = ins.subscription_id
-                SET s.billing_cycle = 'monthly'
-                WHERE c.type = 'insurance' AND ins.payment_type = 'installment' AND s.billing_cycle != 'monthly'
-            ");
-
-            // Taksitli sigortalarda sonraki ödeme tarihi 60 günden fazla ileriye (örn. 1 yıl sonrasına) atılmışsa,
-            // bunu takvimde ve yaklaşan ödemelerde görünmesi için içinde bulunulan / yaklaşan aya normalize et
-            $stmtFixIns = $pdo->query("
-                SELECT s.id, s.next_payment_date, ins.policy_start_date, ins.policy_end_date
-                FROM subscriptions s
-                JOIN categories c ON s.category_id = c.id
-                JOIN subscription_insurance_details ins ON s.id = ins.subscription_id
-                WHERE c.type = 'insurance' 
-                  AND ins.payment_type = 'installment'
-                  AND s.status = 'active'
-                  AND (s.next_payment_date > DATE_ADD(CURRENT_DATE, INTERVAL 60 DAY) OR s.next_payment_date IS NULL)
-            ");
-            $toFix = $stmtFixIns->fetchAll(PDO::FETCH_ASSOC);
-
-            foreach ($toFix as $fRow) {
-                $tDay = 1;
-                if (!empty($fRow['policy_start_date'])) {
-                    $tDay = (int)date('j', strtotime($fRow['policy_start_date']));
-                } elseif (!empty($fRow['next_payment_date'])) {
-                    $tDay = (int)date('j', strtotime($fRow['next_payment_date']));
-                } else {
-                    $tDay = (int)date('j');
-                }
-
-                $curYear = (int)date('Y');
-                $curMonth = (int)date('n');
-                $daysInCurMonth = (int)date('t', strtotime(sprintf('%04d-%02d-01', $curYear, $curMonth)));
-                $validDay = min($tDay, $daysInCurMonth);
-
-                $targetDateThisMonth = sprintf('%04d-%02d-%02d', $curYear, $curMonth, $validDay);
-
-                $pdo->prepare("UPDATE subscriptions SET next_payment_date = ? WHERE id = ?")
-                    ->execute([$targetDateThisMonth, $fRow['id']]);
-            }
-        } catch (Exception $e) {
-            sistemLogla("Migration v14 insurance installments hatası: " . $e->getMessage(), 'WARNING');
-        }
-        $_SESSION['_abonelik_mig_v14_insurance_installments'] = true;
-    }
+        // Fiyat ve zam geçmişi takip tablosu
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS `subscription_price_history` (
+                `id` INT AUTO_INCREMENT PRIMARY KEY,
+                `subscription_id` INT NOT NULL,
+                `user_id` INT NOT NULL,
+                `old_price` DECIMAL(10, 2) NOT NULL,
+                `new_price` DECIMAL(10, 2) NOT NULL,
+                `percentage_change` DECIMAL(6, 2) NOT NULL DEFAULT 0.00,
+                `currency` VARCHAR(5) NOT NULL DEFAULT 'TRY',
+                `notes` VARCHAR(255) NULL,
+                `changed_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX `idx_sph_sub` (`subscription_id`),
+                INDEX `idx_sph_user` (`user_id`),
+                INDEX `idx_sph_date` (`changed_at`)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        ");
+    } catch (Exception $e) {}
 } catch (\PDOException $e) {
     sistemLogla("Veritabanı Bağlantı Hatası: " . $e->getMessage(), 'CRITICAL');
     if (!headers_sent()) {
@@ -705,16 +299,32 @@ function adminKontrol() {
     girisKontrol();
     if (($_SESSION['role'] ?? 'USER') !== 'ADMIN') {
         sistemLogla("Yetkisiz Admin Sayfası Erişimi: " . ($_SESSION['username'] ?? 'Bilinmeyen'), 'SECURITY');
-        header("Location: index.php?msg=unauthorized");
-        exit;
+        guvenliYonlendir("index.php?msg=unauthorized");
     }
 }
 
+/**
+ * Güvenli Yönlendirme (Header'lar gönderilmiş olsa bile JS/Meta ile yönlendirir, beyaz sayfa üretmez)
+ */
+function guvenliYonlendir($url) {
+    if (!headers_sent()) {
+        header("Location: " . $url);
+        exit;
+    }
+    echo '<script>window.location.replace(' . json_encode($url) . ');</script>';
+    echo '<noscript><meta http-equiv="refresh" content="0;url=' . htmlspecialchars($url, ENT_QUOTES, 'UTF-8') . '"></noscript>';
+    exit;
+}
+
 // 8. AES-256 Şifreleme / Çözme Yardımcıları (Kullanıcı Adı & Şifre Saklama)
-function sifrelemeAnahtariAl() {
+function sifrelemeAnahtariAl($legacy = false) {
     $secret = env('APP_SECRET_KEY', 'default_secret_key_32_characters');
     $salt   = env('MASTER_SALT', 'default_salt_string');
-    return hash('sha256', $secret . $salt, true);
+    if ($legacy) {
+        return hash('sha256', $secret . $salt, true);
+    }
+    // PBKDF2 ile 10.000 iterasyonlu endüstri standardı KDF anahtar türetimi
+    return hash_pbkdf2('sha256', $secret, $salt, 10000, 32, true);
 }
 
 function sifrele($duzMetin) {
@@ -730,23 +340,59 @@ function sifrele($duzMetin) {
 
 function sifreCoz($sifreliMetin, $iv) {
     if (empty($sifreliMetin) || empty($iv)) return '';
-    $anahtar = sifrelemeAnahtariAl();
-    $decodedSifreli = base64_decode($sifreliMetin);
-    $decodedIv = base64_decode($iv);
-    return openssl_decrypt($decodedSifreli, 'AES-256-CBC', $anahtar, 0, $decodedIv);
+    $decodedSifreli = base64_decode($sifreliMetin, true);
+    $decodedIv = base64_decode($iv, true);
+    if ($decodedSifreli === false || $decodedIv === false || strlen($decodedIv) !== 16) {
+        // Ham veri veya geçersiz IV durumunda uyarı vermeden dene
+        $rawIv = (string)base64_decode($iv);
+        if (strlen($rawIv) === 16) {
+            $plain = @openssl_decrypt($sifreliMetin, 'AES-256-CBC', sifrelemeAnahtariAl(), 0, $rawIv);
+            if ($plain !== false) return $plain;
+            $plain = @openssl_decrypt($sifreliMetin, 'AES-256-CBC', sifrelemeAnahtariAl(true), 0, $rawIv);
+            if ($plain !== false) return $plain;
+        }
+        return '';
+    }
+    // 1. Önce modern PBKDF2 anahtarı ile çözmeyi dene
+    $plain = @openssl_decrypt($decodedSifreli, 'AES-256-CBC', sifrelemeAnahtariAl(), 0, $decodedIv);
+    if ($plain === false) {
+        $plain = @openssl_decrypt($sifreliMetin, 'AES-256-CBC', sifrelemeAnahtariAl(), 0, $decodedIv);
+    }
+    // 2. Başarısız olursa eski (SHA-256) anahtar ile çözmeyi dene (Mevcut kayıtlar için %100 kesintisiz uyumluluk)
+    if ($plain === false || $plain === '') {
+        $plain = @openssl_decrypt($decodedSifreli, 'AES-256-CBC', sifrelemeAnahtariAl(true), 0, $decodedIv);
+        if ($plain === false) {
+            $plain = @openssl_decrypt($sifreliMetin, 'AES-256-CBC', sifrelemeAnahtariAl(true), 0, $decodedIv);
+        }
+    }
+    return $plain !== false ? $plain : '';
 }
 
 // 9. Master PIN Kontrolü (Dijital Şifreleri Görmek İçin)
 function masterPinDogrula($pin) {
     global $pdo;
     if (!isset($_SESSION['user_id'])) return false;
-    $stmt = $pdo->prepare("SELECT master_pin_hash FROM users WHERE id = ?");
-    $stmt->execute([$_SESSION['user_id']]);
-    $pinHash = $stmt->fetchColumn();
-    if ($pinHash && password_verify($pin, $pinHash)) {
-        $_SESSION['pin_verified_until'] = time() + 900; // 15 dakika boyunca kilit açık kalır
-        return true;
+    try {
+        $stmt = $pdo->prepare("SELECT password, master_pin_hash FROM users WHERE id = ?");
+        $stmt->execute([$_SESSION['user_id']]);
+        $row = $stmt->fetch();
+        if (!$row) return false;
+
+        // 1. Kullanicinin Master PIN'i varsa onunla dogrula
+        if (!empty($row['master_pin_hash']) && password_verify($pin, $row['master_pin_hash'])) {
+            $_SESSION['pin_verified_until'] = time() + 900; // 15 dakika boyunca kilit acik kalir
+            return true;
+        }
+
+        // 2. Master PIN tanimli degilse veya kullanici giris sifresini girdiyse hesap sifresiyle dogrula
+        if (password_verify($pin, $row['password'])) {
+            $_SESSION['pin_verified_until'] = time() + 900;
+            return true;
+        }
+    } catch (Exception $e) {
+        sistemLogla("Master PIN doğrulama hatası: " . $e->getMessage(), 'ERROR');
     }
+
     return false;
 }
 
@@ -759,18 +405,22 @@ function kullaniciSifreGorebilirMi($subscriptionId, $userId, $userRole = 'USER')
     // 1. Yönetici ise her zaman görüntüleyebilir
     if ($userRole === 'ADMIN') return true;
 
-    // 2. Aboneliği oluşturan veya ödeyen kişi ise
-    $stmt = $pdo->prepare("SELECT user_id, payer_user_id FROM subscriptions WHERE id = ?");
-    $stmt->execute([$subscriptionId]);
-    $sub = $stmt->fetch();
-    if ($sub && ($sub['user_id'] == $userId || $sub['payer_user_id'] == $userId)) {
-        return true;
-    }
+    try {
+        // 2. Aboneliği oluşturan veya ödeyen kişi ise
+        $stmt = $pdo->prepare("SELECT user_id, payer_user_id FROM subscriptions WHERE id = ?");
+        $stmt->execute([$subscriptionId]);
+        $sub = $stmt->fetch();
+        if ($sub && ($sub['user_id'] == $userId || $sub['payer_user_id'] == $userId)) {
+            return true;
+        }
 
-    // 3. Erişim izni verilen üyeler arasında mı?
-    $stmtAcc = $pdo->prepare("SELECT id FROM subscription_access WHERE subscription_id = ? AND user_id = ? AND can_view_credentials = 1");
-    $stmtAcc->execute([$subscriptionId, $userId]);
-    return ($stmtAcc->rowCount() > 0);
+        // 3. Erişim izni verilen üyeler arasında mı?
+        $stmtAcc = $pdo->prepare("SELECT id FROM subscription_access WHERE subscription_id = ? AND user_id = ? AND can_view_credentials = 1");
+        $stmtAcc->execute([$subscriptionId, $userId]);
+        return ($stmtAcc->rowCount() > 0);
+    } catch (Exception $e) {
+        return false;
+    }
 }
 
 // 9.1 Konum & Mekan Yetki Kontrolü
@@ -812,8 +462,18 @@ function kullaniciKonumlariGetir($userId, $userRole = 'USER') {
 // 9.3 Mekana / Konuma Uygun Kategori Türlerini Döndür
 function mekanKategoriTurleri($locationOrId) {
     global $pdo;
+    
+    // Sistemde tanımlı tüm bağlı türleri dinamik al
+    $allRegisteredTypes = ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general', 'tax'];
+    try {
+        $dbTypes = $pdo->query("SELECT type_key FROM category_types ORDER BY sort_order ASC")->fetchAll(PDO::FETCH_COLUMN);
+        if (!empty($dbTypes)) {
+            $allRegisteredTypes = $dbTypes;
+        }
+    } catch (Exception $e) {}
+
     if (empty($locationOrId)) {
-        return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+        return $allRegisteredTypes;
     }
 
     $loc = is_array($locationOrId) ? $locationOrId : null;
@@ -823,15 +483,23 @@ function mekanKategoriTurleri($locationOrId) {
         $loc = $stmt->fetch();
     }
     if (!$loc) {
-        return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+        return $allRegisteredTypes;
     }
 
     $icon = strtolower($loc['icon'] ?? '');
     $cleanName = str_replace(['İ', 'I', 'ı'], ['i', 'i', 'i'], $loc['name'] ?? '');
     $cleanName = mb_strtolower($cleanName, 'UTF-8');
 
-    // 1. Ev / Fiziksel / Konut / Ofis / Şehirler (İstanbul, Sakarya vb.) -> Ev Faturaları & Telekom
-    if (in_array($icon, ['home', 'building', 'sun']) || 
+    // 1. Vergi / Maliye / Harç / KDV (İkon veya Mekan Adı)
+    if ($icon === 'tax' || strpos($icon, '💰') !== false || strpos($cleanName, 'vergi') !== false || strpos($cleanName, 'maliye') !== false || 
+        strpos($cleanName, 'harc') !== false || strpos($cleanName, 'harç') !== false || 
+        strpos($cleanName, 'kdv') !== false || strpos($cleanName, 'stopaj') !== false || 
+        strpos($cleanName, 'tax') !== false) {
+        return ['tax', 'vergi'];
+    }
+
+    // 2. Ev / Fiziksel / Konut / Ofis / Şehirler (İstanbul, Sakarya vb.) -> Ev Faturaları & Telekom
+    if (in_array($icon, ['home', 'building', 'sun', '🏠', '🏡', '🏢', '🏖️']) || 
         strpos($cleanName, 'ev') !== false || strpos($cleanName, 'konut') !== false || 
         strpos($cleanName, 'daire') !== false || strpos($cleanName, 'apartman') !== false ||
         strpos($cleanName, 'istanbul') !== false || strpos($cleanName, 'sakarya') !== false ||
@@ -840,27 +508,37 @@ function mekanKategoriTurleri($locationOrId) {
         return ['utility', 'telecom'];
     }
 
-    // 2. Dijital / Bulut / Servis
-    if ($icon === 'globe' || strpos($cleanName, 'dijital') !== false || strpos($cleanName, 'digital') !== false || strpos($cleanName, 'online') !== false || strpos($cleanName, 'bulut') !== false) {
+    // 3. Dijital / Bulut / Servis
+    if (in_array($icon, ['globe', 'cloud', '💻', '🌐', '☁️']) || strpos($cleanName, 'dijital') !== false || strpos($cleanName, 'digital') !== false || strpos($cleanName, 'online') !== false || strpos($cleanName, 'bulut') !== false) {
         return ['digital'];
     }
 
-    // 3. Sigorta / Poliçe / Kasko
-    if ($icon === 'shield' || strpos($cleanName, 'sigorta') !== false || strpos($cleanName, 'kasko') !== false || strpos($cleanName, 'poliçe') !== false || strpos($cleanName, 'police') !== false || strpos($cleanName, 'dask') !== false) {
+    // 4. Sigorta / Poliçe / Kasko
+    if (in_array($icon, ['shield', '🛡️', '🛡']) || strpos($cleanName, 'sigorta') !== false || strpos($cleanName, 'kasko') !== false || strpos($cleanName, 'poliçe') !== false || strpos($cleanName, 'police') !== false || strpos($cleanName, 'dask') !== false) {
         return ['insurance'];
     }
 
-    // 4. Bireysel Emeklilik (BES) / Finans
-    if (in_array($icon, ['chart', 'trending-up']) || strpos($cleanName, 'bes') !== false || strpos($cleanName, 'emeklilik') !== false || strpos($cleanName, 'fon') !== false) {
+    // 5. Bireysel Emeklilik (BES) / Finans
+    if (in_array($icon, ['chart', 'trending-up', '📈', '📊']) || strpos($cleanName, 'bes') !== false || strpos($cleanName, 'emeklilik') !== false || strpos($cleanName, 'fon') !== false) {
         return ['bes'];
     }
 
-    // 5. Araç / Taşıt
-    if ($icon === 'car' || strpos($cleanName, 'araç') !== false || strpos($cleanName, 'arac') !== false || strpos($cleanName, 'araba') !== false || strpos($cleanName, 'taşıt') !== false || strpos($cleanName, 'tasit') !== false) {
+    // 6. Araç / Taşıt
+    if (in_array($icon, ['car', '🚗', '🚙', '🚘']) || strpos($cleanName, 'araç') !== false || strpos($cleanName, 'arac') !== false || strpos($cleanName, 'araba') !== false || strpos($cleanName, 'taşıt') !== false || strpos($cleanName, 'tasit') !== false) {
         return ['vehicle'];
     }
 
-    return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+    // 7. Özel Tanımlı Bağlı Tür Eşleşmesi (category_types tablosundan dinamik kontrol)
+    try {
+        $checkCustom = $pdo->prepare("SELECT type_key FROM category_types WHERE LOWER(type_key) = ? OR LOWER(name) LIKE ?");
+        $checkCustom->execute([$cleanName, "%{$cleanName}%"]);
+        $customType = $checkCustom->fetchColumn();
+        if ($customType) {
+            return [$customType, 'general'];
+        }
+    } catch (Exception $e) {}
+
+    return $allRegisteredTypes;
 }
 
 // 10. Formatlayıcılar
@@ -889,32 +567,228 @@ function kalanGunHesapla($hedefTarih) {
     return $fark;
 }
 
-// 11. CSP NONCE & Güvenlik Başlıkları
+// 10.4. Abonelik Fiyat & Zam Geçmişini Getir
+function abonelikFiyatGecmisi($subscriptionId) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("
+            SELECT h.*, u.full_name as user_name
+            FROM subscription_price_history h
+            LEFT JOIN users u ON h.user_id = u.id
+            WHERE h.subscription_id = ?
+            ORDER BY h.changed_at DESC, h.id DESC
+        ");
+        $stmt->execute([(int)$subscriptionId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Exception $e) {
+        return [];
+    }
+}
+
+// 10.5. Aboneliğin Son 1 Yıldaki Fiyat Değişimini Hesapla
+function abonelikSon1YilZamOrani($subscriptionId, $currentPrice) {
+    global $pdo;
+    try {
+        $stmt = $pdo->prepare("
+            SELECT old_price, new_price, changed_at 
+            FROM subscription_price_history 
+            WHERE subscription_id = ? AND changed_at >= DATE_SUB(NOW(), INTERVAL 1 YEAR)
+            ORDER BY changed_at ASC, id ASC
+            LIMIT 1
+        ");
+        $stmt->execute([(int)$subscriptionId]);
+        $firstChange = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($firstChange && (float)$firstChange['old_price'] > 0) {
+            $basePrice = (float)$firstChange['old_price'];
+            $current = (float)$currentPrice;
+            $diff = $current - $basePrice;
+            if (abs($diff) >= 0.01) {
+                $pct = round(($diff / $basePrice) * 100, 1);
+                return [
+                    'has_hike' => true,
+                    'percentage' => $pct,
+                    'is_increase' => ($pct > 0),
+                    'base_price' => $basePrice,
+                    'current_price' => $current,
+                    'start_date' => $firstChange['changed_at']
+                ];
+            }
+        }
+    } catch (Exception $e) {}
+    return ['has_hike' => false];
+}
+
+// 10.6. Atıl Abonelik ve Tasarruf Dedektörü: İptal Edilebilecek / Tasarruf Sağlanabilecek Servisleri Listele
+function tasarrufOnerileriniGetir($userId = null, $isAdmin = false, $locationId = null) {
+    global $pdo;
+    $items = [];
+    $savingsByCurrency = [];
+
+    try {
+        $locSql = "";
+        $params = [];
+        if (!empty($locationId)) {
+            $locSql = " AND s.location_id = ? ";
+            $params[] = (int)$locationId;
+        }
+
+        $authSql = "";
+        if (!$isAdmin && !empty($userId)) {
+            $authSql = " AND (s.user_id = ? OR s.payer_user_id = ? OR EXISTS (SELECT 1 FROM subscription_access sa WHERE sa.subscription_id = s.id AND sa.user_id = ?)) ";
+            $params[] = (int)$userId;
+            $params[] = (int)$userId;
+            $params[] = (int)$userId;
+        }
+
+        // 1. Dondurulmuş / Askıya Alınmış Abonelikler (Atıl Servisler)
+        $qPaused = "
+            SELECT s.id, s.title, s.price, s.currency, s.billing_cycle, s.status, s.icon, s.color,
+                   c.name as category_name, c.type as category_type
+            FROM subscriptions s
+            LEFT JOIN categories c ON s.category_id = c.id
+            WHERE s.status = 'paused' {$locSql} {$authSql}
+            ORDER BY s.price DESC
+        ";
+        $stmtP = $pdo->prepare($qPaused);
+        $stmtP->execute($params);
+        while ($row = $stmtP->fetch(PDO::FETCH_ASSOC)) {
+            $price = (float)$row['price'];
+            $curr = $row['currency'] ?: 'TRY';
+            $mult = match($row['billing_cycle']) {
+                'annual' => 1,
+                'quarterly' => 4,
+                'semi_annual' => 2,
+                'one_time' => 0,
+                default => 12
+            };
+            $annualSavings = $price * $mult;
+            if ($annualSavings > 0) {
+                $savingsByCurrency[$curr] = ($savingsByCurrency[$curr] ?? 0) + $annualSavings;
+                $items[] = [
+                    'id' => (int)$row['id'],
+                    'title' => $row['title'],
+                    'category_name' => $row['category_name'] ?: 'Abonelik',
+                    'icon' => $row['icon'] ?: 'pause-circle',
+                    'color' => $row['color'] ?: 'amber',
+                    'type' => 'paused',
+                    'badge' => '⏸️ Dondurulmuş (Atıl)',
+                    'badge_class' => 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20',
+                    'annual_savings' => $annualSavings,
+                    'currency' => $curr,
+                    'recommendation' => 'Bu servis dondurulmuş / atıl durumda. Tamamen iptal ederseniz yılda ' . paraFormat($annualSavings, $curr) . ' tasarruf edersiniz.',
+                    'can_cancel_direct' => true
+                ];
+            }
+        }
+
+        // 2. Deneme Süresi Bitmek Üzere veya Yeni Dolmuş Olanlar (Tasarruf Fırsatı)
+        $qTrial = "
+            SELECT s.id, s.title, s.price, s.currency, s.billing_cycle, s.trial_end_date, s.icon, s.color,
+                   c.name as category_name,
+                   DATEDIFF(s.trial_end_date, CURRENT_DATE) as gun_farki
+            FROM subscriptions s
+            LEFT JOIN categories c ON s.category_id = c.id
+            WHERE s.status = 'active' AND s.is_trial = 1
+              AND s.trial_end_date IS NOT NULL
+              AND s.trial_end_date <= DATE_ADD(CURRENT_DATE, INTERVAL 7 DAY)
+              {$locSql} {$authSql}
+            ORDER BY s.trial_end_date ASC
+        ";
+        $stmtT = $pdo->prepare($qTrial);
+        $stmtT->execute($params);
+        while ($row = $stmtT->fetch(PDO::FETCH_ASSOC)) {
+            $price = (float)$row['price'];
+            $curr = $row['currency'] ?: 'TRY';
+            $mult = match($row['billing_cycle']) {
+                'annual' => 1,
+                'quarterly' => 4,
+                'semi_annual' => 2,
+                'one_time' => 0,
+                default => 12
+            };
+            $annualSavings = $price * $mult;
+            $gunFarki = (int)$row['gun_farki'];
+            $sureMetin = ($gunFarki < 0) ? abs($gunFarki) . ' gün önce doldu' : ($gunFarki === 0 ? 'bugün doluyor' : $gunFarki . ' gün kaldı');
+            if ($annualSavings > 0) {
+                $savingsByCurrency[$curr] = ($savingsByCurrency[$curr] ?? 0) + $annualSavings;
+                $items[] = [
+                    'id' => (int)$row['id'],
+                    'title' => $row['title'],
+                    'category_name' => $row['category_name'] ?: 'Deneme Sürümü',
+                    'icon' => $row['icon'] ?: 'clock',
+                    'color' => $row['color'] ?: 'purple',
+                    'type' => 'trial_ending',
+                    'badge' => '⏳ Deneme Bitişi (' . $sureMetin . ')',
+                    'badge_class' => 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20',
+                    'annual_savings' => $annualSavings,
+                    'currency' => $curr,
+                    'recommendation' => 'Deneme süresi ' . $sureMetin . '. Kullanmayacaksanız iptal ederek yılda ' . paraFormat($annualSavings, $curr) . ' tasarruf edebilirsiniz.',
+                    'can_cancel_direct' => true
+                ];
+            }
+        }
+
+        // 3. Taahhüt Bitişi Yaklaşan ve Taahhütsüz Fiyatı Yüksek Olanlar (Zam Önleme Tasarrufu)
+        $qComm = "
+            SELECT s.id, s.title, s.price, s.currency, s.icon, s.color,
+                   tel.post_commitment_price, tel.commitment_end, tel.operator_name,
+                   c.name as category_name,
+                   DATEDIFF(tel.commitment_end, CURRENT_DATE) as gun_farki
+            FROM subscriptions s
+            JOIN subscription_telecom_details tel ON s.id = tel.subscription_id
+            LEFT JOIN categories c ON s.category_id = c.id
+            WHERE s.status = 'active'
+              AND tel.commitment_end IS NOT NULL
+              AND tel.commitment_end <= DATE_ADD(CURRENT_DATE, INTERVAL 30 DAY)
+              AND tel.post_commitment_price > s.price
+              {$locSql} {$authSql}
+            ORDER BY tel.commitment_end ASC
+        ";
+        $stmtC = $pdo->prepare($qComm);
+        $stmtC->execute($params);
+        while ($row = $stmtC->fetch(PDO::FETCH_ASSOC)) {
+            $oldP = (float)$row['price'];
+            $newP = (float)$row['post_commitment_price'];
+            $fark = $newP - $oldP;
+            $curr = $row['currency'] ?: 'TRY';
+            $annualRisk = $fark * 12;
+            $gunFarki = (int)$row['gun_farki'];
+            $sureMetin = ($gunFarki < 0) ? abs($gunFarki) . ' gün önce doldu' : ($gunFarki === 0 ? 'bugün bitiyor' : $gunFarki . ' gün kaldı');
+            if ($annualRisk > 0) {
+                $savingsByCurrency[$curr] = ($savingsByCurrency[$curr] ?? 0) + $annualRisk;
+                $items[] = [
+                    'id' => (int)$row['id'],
+                    'title' => $row['title'],
+                    'category_name' => $row['operator_name'] ?: 'Telekom',
+                    'icon' => $row['icon'] ?: 'wifi',
+                    'color' => $row['color'] ?: 'rose',
+                    'type' => 'commitment_ending',
+                    'badge' => '⚡ Taahhüt Zammı Riski (' . $sureMetin . ')',
+                    'badge_class' => 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20',
+                    'annual_savings' => $annualRisk,
+                    'currency' => $curr,
+                    'recommendation' => 'Taahhüt bitince fiyat ' . paraFormat($newP, $curr) . ' olacak. Yenileme veya iptal ile yılda ' . paraFormat($annualRisk, $curr) . ' ek maliyeti önleyebilirsiniz.',
+                    'can_cancel_direct' => false
+                ];
+            }
+        }
+
+    } catch (Exception $e) {
+        sistemLogla("Tasarruf önerileri hesaplama hatası: " . $e->getMessage(), 'ERROR');
+    }
+
+    return [
+        'total_annual_savings' => $savingsByCurrency,
+        'count' => count($items),
+        'items' => $items
+    ];
+}
+
+// 11. CSP NONCE
 if (!isset($cspNonce)) {
     try {
         $cspNonce = bin2hex(random_bytes(16));
     } catch (Exception $e) {
         $cspNonce = bin2hex(openssl_random_pseudo_bytes(16));
     }
-}
-
-if (!headers_sent()) {
-    header("X-Frame-Options: SAMEORIGIN");
-    header("X-Content-Type-Options: nosniff");
-    header("Referrer-Policy: strict-origin-when-cross-origin");
-    if ($isHttps) {
-        header("Strict-Transport-Security: max-age=31536000; includeSubDomains");
-    }
-
-    $cspHeader = "default-src 'self'; " .
-                 "base-uri 'self'; " .
-                 "object-src 'none'; " . 
-                 "form-action 'self'; " . 
-                 "script-src 'self' 'nonce-{$cspNonce}' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://unpkg.com; " .
-                 "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; " .
-                 "img-src 'self' data: blob: https:; " .
-                 "font-src 'self' https://cdnjs.cloudflare.com; " .
-                 "connect-src 'self';";
-
-    header("Content-Security-Policy: " . $cspHeader);
 }

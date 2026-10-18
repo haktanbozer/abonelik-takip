@@ -249,6 +249,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             }
 
+            // Fiyat Değişikliği Tespiti ve Zam Geçmişi Kaydı
+            $oldPrice = (float)$sub['price'];
+            $newPrice = (float)$price;
+            if ($oldPrice > 0 && abs($newPrice - $oldPrice) >= 0.01) {
+                $pct = round((($newPrice - $oldPrice) / $oldPrice) * 100, 2);
+                $changeNote = ($newPrice > $oldPrice) ? "Fiyat artışı" : "Fiyat indirimi";
+                try {
+                    $stmtHist = $pdo->prepare("
+                        INSERT INTO `subscription_price_history` 
+                        (`subscription_id`, `user_id`, `old_price`, `new_price`, `percentage_change`, `currency`, `notes`, `changed_at`)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+                    ");
+                    $stmtHist->execute([$id, $userId, $oldPrice, $newPrice, $pct, $currency, $changeNote]);
+                } catch (Exception $e) {
+                    sistemLogla("Fiyat geçmişi kaydı hatası: " . $e->getMessage(), 'WARNING');
+                }
+            }
+
             // 2. Alt Tabloları Güncelle
             if ($catType === 'digital') {
                 $accUsername = trim($_POST['account_username'] ?? '');
@@ -277,18 +295,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $id, $accUsername, $websiteUrl, $profileCount,
                         $accUsername, $websiteUrl, $profileCount
                     ]);
-                }
-
-                // Şifre erişim yetkilerini güncelle
-                $pdo->prepare("DELETE FROM subscription_access WHERE subscription_id = ?")->execute([$id]);
-                if (!empty($_POST['allowed_users']) && is_array($_POST['allowed_users'])) {
-                    $stmtInsAcc = $pdo->prepare("INSERT IGNORE INTO subscription_access (subscription_id, user_id, can_view_credentials) VALUES (?, ?, 1)");
-                    foreach ($_POST['allowed_users'] as $allowedUid) {
-                        $allowedUid = (int)$allowedUid;
-                        if ($allowedUid > 0 && $allowedUid != $sub['user_id']) {
-                            $stmtInsAcc->execute([$id, $allowedUid]);
-                        }
-                    }
                 }
             } elseif ($catType === 'utility') {
                 $companyName = trim($_POST['company_name'] ?? '');
@@ -380,6 +386,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $id, $besCompany, $besContractNo, $besPaymentDay, $besOwnerRelation, $besAutoPaySource,
                     $besCompany, $besContractNo, $besPaymentDay, $besOwnerRelation, $besAutoPaySource
                 ]);
+            }
+
+            // Bilgileri görüntüleme / şifre yetkilerini güncelle (Tüm kategoriler için)
+            $pdo->prepare("DELETE FROM subscription_access WHERE subscription_id = ?")->execute([$id]);
+            if (!empty($_POST['allowed_users']) && is_array($_POST['allowed_users'])) {
+                $stmtInsAcc = $pdo->prepare("INSERT IGNORE INTO subscription_access (subscription_id, user_id, can_view_credentials) VALUES (?, ?, 1)");
+                foreach ($_POST['allowed_users'] as $allowedUid) {
+                    $allowedUid = (int)$allowedUid;
+                    if ($allowedUid > 0 && $allowedUid != $sub['user_id']) {
+                        $stmtInsAcc->execute([$id, $allowedUid]);
+                    }
+                }
             }
 
             $pdo->commit();
@@ -549,20 +567,37 @@ require_once __DIR__ . '/header.php';
                         $locIdToUse = $_POST['location_id'] ?? ($sub['location_id'] ?? null);
                         $allowedTypes = mekanKategoriTurleri($locIdToUse);
 
-                        $groupTitlesMap = [
-                            'utility'   => '⚡ Ev / Fiziksel Fatura (Elektrik, Su, Doğalgaz, Aidat)',
-                            'telecom'   => '📶 Ev / Telekom (Ev İnterneti, TV, Telefon, Mobil)',
-                            'digital'   => '💻 Dijital Abonelik (Netflix, Spotify, Bulut, AI)',
-                            'insurance' => '🛡️ Sigorta & Poliçe (TSS, ÖSS, Hayat, Kasko)',
-                            'bes'       => '📈 Bireysel Emeklilik (BES & OKS)',
-                            'vehicle'   => '🚗 Araç & Taşıt (Muayene, MTV, Bakım, HGS)',
-                            'general'   => 'Genel Abonelikler'
-                        ];
+                        $groupTitlesMap = [];
+                        try {
+                            $catTypesDb = $pdo->query("SELECT type_key, name, icon FROM category_types ORDER BY sort_order ASC")->fetchAll(PDO::FETCH_ASSOC);
+                            foreach ($catTypesDb as $ct) {
+                                $icn = !empty($ct['icon']) ? $ct['icon'] . ' ' : '';
+                                $groupTitlesMap[$ct['type_key']] = $icn . $ct['name'];
+                            }
+                        } catch (Exception $e) {}
+
+                        if (empty($groupTitlesMap)) {
+                            $groupTitlesMap = [
+                                'utility'   => '⚡ Ev / Fiziksel Fatura (Elektrik, Su, Doğalgaz, Aidat)',
+                                'telecom'   => '📶 Ev / Telekom (Ev İnterneti, TV, Telefon, Mobil)',
+                                'digital'   => '💻 Dijital Abonelik (Netflix, Spotify, Bulut, AI)',
+                                'insurance' => '🛡️ Sigorta & Poliçe (TSS, ÖSS, Hayat, Kasko)',
+                                'bes'       => '📈 Bireysel Emeklilik (BES & OKS)',
+                                'vehicle'   => '🚗 Araç & Taşıt (Muayene, MTV, Bakım, HGS)',
+                                'tax'       => '💰 Vergi & Harç (MTV, Gelir, KDV, Emlak)',
+                                'general'   => 'Genel Abonelikler'
+                            ];
+                        }
                         $groupedCats = [];
                         $selectedCatId = (int)($_POST['category_id'] ?? $sub['category_id'] ?? 0);
                         foreach ($categories as $cat) {
-                            $t = $cat['type'] ?? 'general';
-                            if (!empty($allowedTypes) && !in_array($t, $allowedTypes) && $cat['id'] != $selectedCatId) {
+                            $t = !empty($cat['type']) ? $cat['type'] : 'general';
+                            $isMotorlu = (strpos(mb_strtolower($cat['name'], 'UTF-8'), 'motorlu') !== false || strpos(mb_strtolower($cat['slug'] ?? '', 'UTF-8'), 'motorlu') !== false || strpos(mb_strtolower($cat['slug'] ?? '', 'UTF-8'), 'mtv') !== false);
+                            if (!$isMotorlu && ($t === 'vergi' || strpos(mb_strtolower($cat['name'], 'UTF-8'), 'vergi') !== false || strpos(mb_strtolower($cat['slug'] ?? '', 'UTF-8'), 'vergi') !== false || strpos(mb_strtolower($cat['name'], 'UTF-8'), 'maliye') !== false || $cat['name'] === 'GSS' || mb_strtolower($cat['slug'] ?? '', 'UTF-8') === 'gss')) {
+                                $t = 'tax';
+                            }
+                            $isTaxAllowed = in_array('tax', $allowedTypes) || in_array('vergi', $allowedTypes);
+                            if (!empty($allowedTypes) && !in_array($t, $allowedTypes) && !($t === 'tax' && $isTaxAllowed) && $cat['id'] != $selectedCatId) {
                                 continue;
                             }
                             $grp = $groupTitlesMap[$t] ?? 'Diğer Abonelikler';
@@ -571,7 +606,7 @@ require_once __DIR__ . '/header.php';
                         foreach ($groupedCats as $grpTitle => $cats): ?>
                             <optgroup label="<?= htmlspecialchars($grpTitle) ?>">
                                 <?php foreach ($cats as $c): ?>
-                                    <option value="<?= $c['id'] ?>" data-type="<?= htmlspecialchars($c['type']) ?>" <?= ($selectedCatId == $c['id']) ? 'selected' : '' ?>>
+                                    <option value="<?= $c['id'] ?>" data-type="<?= htmlspecialchars(!empty($c['type']) && $c['type'] !== 'general' ? $c['type'] : 'tax') ?>" <?= ($selectedCatId == $c['id']) ? 'selected' : '' ?>>
                                         <?= htmlspecialchars($c['name']) ?>
                                     </option>
                                 <?php endforeach; ?>
@@ -596,9 +631,10 @@ require_once __DIR__ . '/header.php';
 
             <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Tutar</label>
+                    <label id="main_price_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Tutar</label>
                     <input type="text" name="price" value="<?= htmlspecialchars($sub['price']) ?>" required
                         class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <span class="text-[10px] text-slate-400 dark:text-slate-500 mt-1 block">Fiyat değiştiğinde zam geçmişine otomatik kaydedilir</span>
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
@@ -619,14 +655,17 @@ require_once __DIR__ . '/header.php';
                     </select>
                 </div>
                 <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Periyot</label>
-                    <select name="billing_cycle" class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <label id="billing_cycle_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Periyot</label>
+                    <select name="billing_cycle" id="billing_cycle_select" class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none">
                         <option value="monthly" <?= $sub['billing_cycle'] === 'monthly' ? 'selected' : '' ?>>Aylık</option>
-                        <option value="annual" <?= $sub['billing_cycle'] === 'annual' ? 'selected' : '' ?>>Yıllık</option>
+                        <option value="annual" <?= $sub['billing_cycle'] === 'annual' ? 'selected' : '' ?>>Yıllık (Senede Bir / Peşin)</option>
                         <option value="quarterly" <?= $sub['billing_cycle'] === 'quarterly' ? 'selected' : '' ?>>3 Aylık</option>
                         <option value="semi_annual" <?= ($sub['billing_cycle'] ?? '') === 'semi_annual' ? 'selected' : '' ?>>6 Aylık</option>
                         <option value="one_time" <?= $sub['billing_cycle'] === 'one_time' ? 'selected' : '' ?>>Tek Seferlik</option>
                     </select>
+                    <div id="annual_cycle_hint" class="text-[10px] text-blue-600 dark:text-blue-400 mt-1 <?= ($sub['billing_cycle'] === 'annual') ? '' : 'hidden' ?>">
+                        💡 Yıllık peşin ödemelerde girilen tutar 12'ye bölünerek aylık bütçenize maliyet olarak yansıtılır.
+                    </div>
                 </div>
             </div>
 
@@ -645,9 +684,10 @@ require_once __DIR__ . '/header.php';
                     </select>
                 </div>
                 <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sonraki Ödeme Tarihi</label>
-                    <input type="date" name="next_payment_date" value="<?= htmlspecialchars($sub['next_payment_date'] ?? '') ?>"
+                    <label id="next_payment_date_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sonraki Ödeme Tarihi</label>
+                    <input type="date" name="next_payment_date" id="next_payment_date_input" value="<?= htmlspecialchars($sub['next_payment_date'] ?? '') ?>"
                         class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+                    <span id="next_payment_date_hint" class="text-[10px] text-slate-400 mt-1 hidden">Taksitli poliçelerde aylık kart taksit günüdür. Poliçenin asıl yenileme tarihi aşağıda belirtilmektedir.</span>
                 </div>
                 <div>
                     <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Paket / Plan Detayı</label>
@@ -675,276 +715,51 @@ require_once __DIR__ . '/header.php';
             </div>
         </div>
 
-        <!-- Dijital Servis Güncellemesi -->
-        <div id="section_digital" class="<?= ($sub['category_type'] === 'digital') ? '' : 'hidden' ?> bg-white dark:bg-slate-900 border border-purple-200 dark:border-purple-500/30 rounded-3xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">💻 Dijital Servis Bilgileri</h2>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Kullanıcı Adı / E-Posta</label>
-                    <input type="text" name="account_username" value="<?= htmlspecialchars($sub['account_username'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-purple-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Yeni Şifre (Değiştirmek istemiyorsanız boş bırakın)</label>
-                    <input type="password" name="account_password" placeholder="Değişmeyecekse boş bırakın"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-purple-500 outline-none">
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Profil Sayısı</label>
-                    <input type="number" name="profile_count" value="<?= (int)($sub['profile_count'] ?? 1) ?>" min="1" max="10"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-purple-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Giriş Adresi</label>
-                    <input type="url" name="website_url" value="<?= htmlspecialchars($sub['website_url'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-purple-500 outline-none">
-                </div>
-            </div>
+        <!-- Kategoriye Özel Dinamik Form Bileşenleri -->
+        <?php 
+        $compDir = __DIR__ . '/components';
+        if (file_exists($compDir . '/form-digital.php')) require $compDir . '/form-digital.php';
+        if (file_exists($compDir . '/form-utility.php')) require $compDir . '/form-utility.php';
+        if (file_exists($compDir . '/form-telecom.php')) require $compDir . '/form-telecom.php';
+        if (file_exists($compDir . '/form-insurance.php')) require $compDir . '/form-insurance.php';
+        if (file_exists($compDir . '/form-bes.php')) require $compDir . '/form-bes.php';
+        ?>
 
-            <!-- Şifre Paylaşımı (Yetkili Üyeler) -->
-            <div class="pt-4 border-t border-purple-200 dark:border-purple-500/20">
-                <label class="block text-xs font-bold text-purple-600 dark:text-purple-300 uppercase tracking-wider mb-1">
-                    🔑 Giriş Şifresini Görebilecek Üyeler
-                </label>
-                <p class="text-[11px] text-slate-500 dark:text-slate-400 mb-3">
-                    Aboneliği ekleyen kişi ve yöneticiler şifreyi görebilir. Şifreyi görmesini istediğiniz diğer aile/ekip üyelerini işaretleyin:
+        <!-- 6. Bilgileri Görüntüleme ve Erişim İzni (Tüm Kategoriler) -->
+        <div id="access-section" class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
+            <div class="pb-3 border-b border-slate-100 dark:border-slate-800">
+                <h2 class="text-xs font-bold uppercase tracking-wider text-blue-600 dark:text-blue-400 flex items-center gap-2">
+                    <span>👥 Bilgileri Görüntüleme ve Erişim İzni</span>
+                </h2>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                    Aboneliği ekleyen kişi ve yöneticiler tüm detayları görebilir. Bu aboneliği, fatura/poliçe bilgilerini ve (varsa) hesap giriş şifresini görme yetkisi vermek istediğiniz diğer üyeleri işaretleyin:
                 </p>
-                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                    <?php 
-                    $otherCount = 0;
-                    foreach ($allUsers as $u): 
-                        if ($u['id'] == $sub['user_id']) continue;
-                        $otherCount++;
-                        $isAllowed = in_array($u['id'], $currentAllowedUsers);
-                    ?>
-                        <label class="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-xl cursor-pointer hover:border-purple-400 dark:hover:border-purple-500/40 transition">
-                            <input type="checkbox" name="allowed_users[]" value="<?= $u['id'] ?>" <?= $isAllowed ? 'checked' : '' ?>
-                                class="w-4 h-4 rounded bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-purple-600 focus:ring-0">
-                            <div>
-                                <span class="text-xs font-semibold text-slate-800 dark:text-slate-200 block"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></span>
-                                <span class="text-[10px] text-slate-500">@<?= htmlspecialchars($u['username']) ?> (<?= $u['role'] ?>)</span>
-                            </div>
-                        </label>
-                    <?php endforeach; ?>
-                    <?php if ($otherCount === 0): ?>
-                        <div class="col-span-full text-xs text-slate-500 italic py-1">
-                            Sistemde başka kayıtlı üye bulunmamaktadır.
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                <?php 
+                $otherUsersCount = 0;
+                $allowedList = $currentAllowedUsers ?? [];
+                $ownerId = (int)($sub['user_id'] ?? $userId);
+                foreach ($allUsers as $u): 
+                    if ($u['id'] == $ownerId) continue;
+                    $otherUsersCount++;
+                    $isAllowed = in_array($u['id'], $allowedList);
+                ?>
+                    <label class="flex items-center gap-2.5 p-3 bg-slate-50 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-2xl cursor-pointer hover:border-blue-400 dark:hover:border-blue-500/40 transition">
+                        <input type="checkbox" name="allowed_users[]" value="<?= $u['id'] ?>" <?= $isAllowed ? 'checked' : '' ?>
+                            class="w-4 h-4 rounded bg-white dark:bg-slate-900 border-slate-300 dark:border-slate-700 text-blue-600 focus:ring-0">
+                        <div class="min-w-0">
+                            <span class="text-xs font-bold text-slate-800 dark:text-slate-200 block truncate"><?= htmlspecialchars($u['full_name'] ?: $u['username']) ?></span>
+                            <span class="text-[10px] text-slate-400 block truncate">@<?= htmlspecialchars($u['username']) ?> &bull; <?= $u['role'] ?></span>
                         </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-
-        <!-- Fatura Güncellemesi -->
-        <div id="section_utility" class="<?= ($sub['category_type'] === 'utility') ? '' : 'hidden' ?> bg-white dark:bg-slate-900 border border-amber-200 dark:border-amber-500/30 rounded-3xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">⚡ Fatura Bilgileri</h2>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div id="util_company_wrap">
-                    <label id="util_company_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Firma / Kurum Adı</label>
-                    <input type="text" name="company_name" id="util_company_input" value="<?= htmlspecialchars($sub['company_name'] ?? '') ?>" placeholder="Örn: İSKİ, İGDAŞ, BEDAŞ"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 outline-none">
-                </div>
-                <div id="util_subno_wrap">
-                    <label id="util_subno_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Abone / Sözleşme No</label>
-                    <input type="text" name="subscriber_no" id="util_subno_input" value="<?= htmlspecialchars($sub['subscriber_no'] ?? '') ?>" placeholder="Örn: 10492819"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 outline-none">
-                </div>
-                <div id="util_meter_wrap">
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sayaç / Tesisat No</label>
-                    <input type="text" name="meter_no" id="util_meter_input" value="<?= htmlspecialchars($sub['meter_no'] ?? '') ?>" placeholder="Örn: SY-9201"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 outline-none">
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div id="util_cutday_wrap">
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Fatura Kesim Günü (Ayın Kaçı?)</label>
-                    <input type="number" name="billing_cut_day" id="util_cutday_input" value="<?= htmlspecialchars($sub['billing_cut_day'] ?? '') ?>" min="1" max="31" placeholder="Örn: 10"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 outline-none">
-                    <p class="text-[11px] text-slate-500 mt-1">Örn: Her ayın 10'unda fatura kesiliyorsa 10 yazın.</p>
-                </div>
-                <div id="util_dueday_wrap">
-                    <label id="util_dueday_label" class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Fatura Son Ödeme Günü (Ayın Kaçı?)</label>
-                    <input type="number" name="due_day" id="util_dueday_input" value="<?= htmlspecialchars($sub['due_day'] ?? '') ?>" min="1" max="31" placeholder="Örn: 20"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-amber-500 outline-none">
-                    <p id="util_dueday_desc" class="text-[11px] text-slate-500 mt-1">Örn: Her ayın 20'si son ödeme günüyse 20 yazın.</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Telekomünikasyon Güncellemesi -->
-        <div id="section_telecom" class="<?= ($sub['category_type'] === 'telecom') ? '' : 'hidden' ?> bg-white dark:bg-slate-900 border border-cyan-200 dark:border-cyan-500/30 rounded-3xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-cyan-600 dark:text-cyan-400">📶 İnternet & Taahhüt Bilgileri</h2>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Operatör Adı</label>
-                    <input type="text" name="operator_name" value="<?= htmlspecialchars($sub['operator_name'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Hizmet Türü</label>
-                    <select name="service_type" id="tel_service_type" class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                        <option value="fiber" <?= ($sub['service_type'] ?? '') === 'fiber' ? 'selected' : '' ?>>Fiber</option>
-                        <option value="vdsl" <?= ($sub['service_type'] ?? '') === 'vdsl' ? 'selected' : '' ?>>VDSL</option>
-                        <option value="mobile" <?= ($sub['service_type'] ?? '') === 'mobile' ? 'selected' : '' ?>>Mobil</option>
-                        <option value="tv_box" <?= ($sub['service_type'] ?? '') === 'tv_box' ? 'selected' : '' ?>>TV Platformu</option>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Hat / Hizmet No</label>
-                    <input type="text" name="phone_or_line_no" value="<?= htmlspecialchars($sub['phone_or_line_no'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Hız & Kota</label>
-                    <input type="text" name="speed_or_quota" value="<?= htmlspecialchars($sub['speed_or_quota'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Taahhüt Başlangıç</label>
-                    <input type="date" name="commitment_start" value="<?= htmlspecialchars($sub['commitment_start'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Taahhüt Bitiş Tarihi</label>
-                    <input type="date" name="commitment_end" value="<?= htmlspecialchars($sub['commitment_end'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-            </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider mb-1.5">Taahhüt Bittiğinde Fiyat (Zamlı Tutar)</label>
-                    <input type="text" name="post_commitment_price" value="<?= htmlspecialchars($sub['post_commitment_price'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-rose-600 dark:text-rose-300 text-sm focus:ring-2 focus:ring-rose-500 outline-none font-bold">
-                </div>
-                <div id="device_rental_fee_wrapper">
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Modem / Cihaz Bedeli</label>
-                    <input type="text" name="device_rental_fee" id="device_rental_fee_input" value="<?= htmlspecialchars($sub['device_rental_fee'] ?? '') ?>" placeholder="0.00"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-            </div>
-        </div>
-
-        <!-- Sigorta & Poliçe Güncellemesi -->
-        <div id="section_insurance" class="<?= ($sub['category_type'] === 'insurance') ? '' : 'hidden' ?> bg-white dark:bg-slate-900 border border-rose-200 dark:border-rose-500/30 rounded-3xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-rose-600 dark:text-rose-400 flex items-center gap-2">
-                <span>🛡️ Poliçe & Sigorta Bilgileri (Kasko, Trafik, DASK, Sağlık vb.)</span>
-            </h2>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sigorta Şirketi</label>
-                    <input type="text" name="ins_company" value="<?= htmlspecialchars($sub['ins_company'] ?? '') ?>" placeholder="Örn: Anadolu Sigorta, Allianz, Axa"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Poliçe Numarası</label>
-                    <input type="text" name="ins_policy_no" value="<?= htmlspecialchars($sub['ins_policy_no'] ?? '') ?>" placeholder="Örn: 24091823901"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sigortalanan Varlık / Bilgi</label>
-                    <input type="text" name="ins_item" value="<?= htmlspecialchars($sub['ins_item'] ?? '') ?>" placeholder="Örn: 34 ABC 123 veya Kadıköy Daire No:4"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Acente / Temsilci Adı</label>
-                    <input type="text" name="ins_agency_name" value="<?= htmlspecialchars($sub['ins_agency_name'] ?? '') ?>" placeholder="Örn: Mert Sigorta Aracılık"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Acente Telefon No</label>
-                    <input type="text" name="ins_agency_phone" value="<?= htmlspecialchars($sub['ins_agency_phone'] ?? '') ?>" placeholder="Örn: 0212 555 0000"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Poliçe Başlangıç Tarihi</label>
-                    <input type="date" name="ins_start_date" value="<?= htmlspecialchars($sub['ins_start_date'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider mb-1.5">Poliçe Bitiş / Yenileme Tarihi *</label>
-                    <input type="date" name="ins_end_date" value="<?= htmlspecialchars($sub['ins_end_date'] ?? '') ?>"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-2 border-t border-slate-200 dark:border-slate-800">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Ödeme Şekli</label>
-                    <select name="ins_payment_type" id="ins_payment_type"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                        <option value="single" <?= (($sub['ins_payment_type'] ?? '') !== 'installment') ? 'selected' : '' ?>>Tek Çekim / Peşin</option>
-                        <option value="installment" <?= (($sub['ins_payment_type'] ?? '') === 'installment') ? 'selected' : '' ?>>Taksitli Ödeme</option>
-                    </select>
-                </div>
-                <div id="ins_installment_fields" class="sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-4 <?= (($sub['ins_payment_type'] ?? '') === 'installment') ? '' : 'hidden' ?>">
-                    <div>
-                        <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Taksit Sayısı</label>
-                        <input type="number" name="ins_installment_count" id="ins_installment_count" min="1" max="24" value="<?= htmlspecialchars($sub['ins_installment_count'] ?? '3') ?>"
-                            class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
+                    </label>
+                <?php endforeach; ?>
+                <?php if ($otherUsersCount === 0): ?>
+                    <div class="col-span-full text-xs text-slate-500 italic py-2">
+                        Sistemde henüz başka aktif üye bulunmuyor. (Yönetici panelinden yeni aile/ekip üyesi ekleyebilirsiniz)
                     </div>
-                    <div>
-                        <div class="flex items-center justify-between mb-1.5">
-                            <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider">Aylık Taksit Tutarı</label>
-                            <span id="ins_installment_calc_btn" class="text-[10px] text-rose-500 dark:text-rose-400 font-semibold cursor-pointer hover:underline" title="Toplam Tutardan Hesapla">Hesapla ↺</span>
-                        </div>
-                        <input type="text" name="ins_installment_amount" id="ins_installment_amount" value="<?= htmlspecialchars($sub['ins_installment_amount'] ?? '') ?>" placeholder="Örn: 1250.00"
-                            class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-rose-500 outline-none">
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Bireysel Emeklilik (BES) Güncellemesi -->
-        <div id="section_bes" class="<?= ($sub['category_type'] === 'bes') ? '' : 'hidden' ?> bg-white dark:bg-slate-900 border border-cyan-200 dark:border-cyan-500/30 rounded-3xl p-6 shadow-sm space-y-4">
-            <h2 class="text-xs font-bold uppercase tracking-wider text-cyan-600 dark:text-cyan-400 flex items-center gap-2">
-                <span>📈 Bireysel Emeklilik (BES) Sözleşme Bilgileri</span>
-            </h2>
-
-            <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Emeklilik Şirketi *</label>
-                    <input type="text" name="bes_company" value="<?= htmlspecialchars($sub['bes_company'] ?? '') ?>" placeholder="Örn: Anadolu Hayat, Avivasa, Garanti Emeklilik"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sözleşme / Sertifika No</label>
-                    <input type="text" name="bes_contract_no" value="<?= htmlspecialchars($sub['bes_contract_no'] ?? '') ?>" placeholder="Örn: BES-98231012"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Düzenli Çekim Günü (Ayın Kaçı?)</label>
-                    <input type="number" name="bes_payment_day" min="1" max="31" value="<?= htmlspecialchars($sub['bes_payment_day'] ?? '15') ?>" placeholder="Örn: 15"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Sözleşme Sahibi / Kime Ait?</label>
-                    <select name="bes_owner_relation" class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                        <?php 
-                        $relations = ['Kendim', 'Eşim', 'Çocuğum', 'Anne / Baba', 'Diğer'];
-                        foreach ($relations as $rel): ?>
-                            <option value="<?= $rel ?>" <?= (($sub['bes_owner_relation'] ?? '') === $rel) ? 'selected' : '' ?>><?= $rel ?></option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div>
-                    <label class="block text-xs font-bold text-slate-600 dark:text-slate-400 uppercase tracking-wider mb-1.5">Otomatik Tahsilat Kaynağı</label>
-                    <input type="text" name="bes_auto_pay_source" value="<?= htmlspecialchars($sub['bes_auto_pay_source'] ?? '') ?>" placeholder="Örn: Bonus Kartım veya Vadesiz TL"
-                        class="w-full p-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-sm focus:ring-2 focus:ring-cyan-500 outline-none">
-                </div>
+                <?php endif; ?>
             </div>
         </div>
 
@@ -1016,7 +831,7 @@ require_once __DIR__ . '/header.php';
 
     </form>
 </div>
-<script nonce="<?= $cspNonce ?>">
+<script>
 document.addEventListener('DOMContentLoaded', function() {
     // 1. Otomatik Ödeme Mantığı
     const check = document.getElementById('is_auto_pay_check');
@@ -1060,20 +875,14 @@ document.addEventListener('DOMContentLoaded', function() {
     const allCategories = <?= json_encode($categories, JSON_UNESCAPED_UNICODE) ?>;
     const allLocations = <?= json_encode($locations, JSON_UNESCAPED_UNICODE) ?>;
 
-    const groupTitles = {
-        'utility': '⚡ Ev / Fiziksel Fatura (Elektrik, Su, Doğalgaz, Aidat)',
-        'telecom': '📶 Ev / Telekom (Ev İnterneti, TV, Telefon, Mobil)',
-        'digital': '💻 Dijital Abonelik (Netflix, Spotify, Bulut, AI)',
-        'insurance': '🛡️ Sigorta & Poliçe (TSS, ÖSS, Hayat, Kasko)',
-        'bes': '📈 Bireysel Emeklilik (BES & OKS)',
-        'vehicle': '🚗 Araç & Taşıt (Muayene, MTV, Bakım, HGS)',
-        'general': 'Genel Abonelikler'
-    };
+    const groupTitles = <?= json_encode($groupTitlesMap, JSON_UNESCAPED_UNICODE) ?>;
 
     function getMekanTypes(locId) {
-        if (!locId) return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+        const allKeys = Object.keys(groupTitles);
+        const fallbackTypes = allKeys.length > 0 ? allKeys : ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general', 'tax'];
+        if (!locId) return fallbackTypes;
         const loc = allLocations.find(l => String(l.id) === String(locId));
-        if (!loc) return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+        if (!loc) return fallbackTypes;
 
         const icon = (loc.icon || '').toLowerCase();
         const normName = (loc.name || '')
@@ -1081,33 +890,38 @@ document.addEventListener('DOMContentLoaded', function() {
             .replace(/ı/g, 'i')
             .toLowerCase();
 
+        // 0. Vergi / Maliye / Harç / KDV (İkon veya Mekan Adı)
+        if (icon === 'tax' || icon === '💰' || /vergi|maliye|harc|harç|kdv|stopaj|tax/.test(normName)) {
+            return ['tax', 'vergi'];
+        }
+
         // 1. Ev / Konut / Bina / Güneş (İstanbul, Sakarya vb. tüm ev ve ofis mekanları) -> SADECE Ev Faturaları & Ev İnterneti
-        if (['home', 'building', 'sun'].includes(icon) || 
+        if (['home', 'building', 'sun', '🏠', '🏡', '🏢', '🏖️'].includes(icon) || 
             /ev|konut|daire|apartman|istanbul|sakarya|ofis|yazlik|yazlık/.test(normName)) {
             return ['utility', 'telecom'];
         }
 
         // 2. Dijital / Bulut -> SADECE Dijital Abonelikler
-        if (['globe', 'cloud'].includes(icon) || /dijital|digital|online|bulut/.test(normName)) {
+        if (['globe', 'cloud', '💻', '🌐', '☁️'].includes(icon) || /dijital|digital|online|bulut/.test(normName)) {
             return ['digital'];
         }
 
         // 3. Sigorta / Güvence -> SADECE Sigorta & Poliçeler
-        if (['shield'].includes(icon) || /sigorta|kasko|police|poliçe|dask/.test(normName)) {
+        if (['shield', '🛡️', '🛡'].includes(icon) || /sigorta|kasko|police|poliçe|dask/.test(normName)) {
             return ['insurance'];
         }
 
-        // 4. BES / Finans -> SADECE Bireysel Emeklilik
-        if (['chart', 'trending-up'].includes(icon) || /bes|emeklilik|fon/.test(normName)) {
+        // 4. BES / Finans -> SADECE Bireysel Emeklilik (ve mekan adı vergi değilse)
+        if ((['chart', 'trending-up', '📈', '📊'].includes(icon) && !/vergi|tax/.test(normName)) || /bes|emeklilik|fon/.test(normName)) {
             return ['bes'];
         }
 
         // 5. Araç / Taşıt -> SADECE Araç Giderleri
-        if (['car'].includes(icon) || /arac|araç|araba|tasit|taşıt/.test(normName)) {
+        if (['car', '🚗', '🚙', '🚘'].includes(icon) || /arac|araç|araba|tasit|taşıt/.test(normName)) {
             return ['vehicle'];
         }
 
-        return ['digital', 'utility', 'telecom', 'insurance', 'bes', 'vehicle', 'general'];
+        return fallbackTypes;
     }
 
     function kategorileriYukle(targetCatId) {
@@ -1115,15 +929,28 @@ document.addEventListener('DOMContentLoaded', function() {
         const prevCatVal = targetCatId !== undefined ? targetCatId : catSelect.value;
         const allowedTypes = getMekanTypes(locId);
 
-        const filtered = allCategories.filter(c => allowedTypes.includes(c.type) || (prevCatVal && String(c.id) === String(prevCatVal)));
+        const filtered = allCategories.filter(c => {
+            let catType = c.type || 'general';
+            const isMot = /motorlu|mtv/.test((c.name || '').toLowerCase()) || /motorlu|mtv/.test((c.slug || '').toLowerCase());
+            if (!isMot && (catType === 'vergi' || /vergi|maliye|gss/.test((c.name || '').toLowerCase()) || /vergi|maliye|gss/.test((c.slug || '').toLowerCase()))) {
+                catType = 'tax';
+            }
+            if ((allowedTypes.includes('tax') || allowedTypes.includes('vergi')) && catType === 'tax') return true;
+            return allowedTypes.includes(catType) || (prevCatVal && String(c.id) === String(prevCatVal));
+        });
 
         catSelect.innerHTML = '<option value="">-- Kategori Seçin --</option>';
 
         const groups = {};
         filtered.forEach(c => {
-            const grp = groupTitles[c.type] || 'Diğer Abonelikler';
+            let catType = c.type || 'general';
+            const isMot = /motorlu|mtv/.test((c.name || '').toLowerCase()) || /motorlu|mtv/.test((c.slug || '').toLowerCase());
+            if (!isMot && (catType === 'vergi' || /vergi|maliye|gss/.test((c.name || '').toLowerCase()) || /vergi|maliye|gss/.test((c.slug || '').toLowerCase()))) {
+                catType = 'tax';
+            }
+            const grp = groupTitles[catType] || 'Diğer Abonelikler';
             if (!groups[grp]) groups[grp] = [];
-            groups[grp].push(c);
+            groups[grp].push({ ...c, resolvedType: catType });
         });
 
         let matched = false;
@@ -1133,7 +960,7 @@ document.addEventListener('DOMContentLoaded', function() {
             cats.forEach(c => {
                 const opt = document.createElement('option');
                 opt.value = c.id;
-                opt.setAttribute('data-type', c.type);
+                opt.setAttribute('data-type', c.resolvedType || c.type);
                 opt.textContent = c.name;
                 if (prevCatVal && String(prevCatVal) === String(c.id)) {
                     opt.selected = true;
@@ -1159,7 +986,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     // 3. Kategori Tipine Göre Dinamik Bölümleri Aç / Kapat
-    function guncelleKategoriDetaylari() {
+    function guncelleKategoriDetaylari(e = null) {
+        const isUserChange = !!e;
         const selectedOpt = catSelect.options[catSelect.selectedIndex];
         const catType = selectedOpt ? (selectedOpt.getAttribute('data-type') || '') : '';
         const catText = selectedOpt ? selectedOpt.textContent.trim() : '';
@@ -1222,6 +1050,25 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         }
 
+        // Sigorta Alanı Başlık Güncellemesi
+        const nextPayLabel = document.getElementById('next_payment_date_label');
+        const nextPayHint = document.getElementById('next_payment_date_hint');
+        if (nextPayLabel) {
+            if (catType === 'insurance') {
+                const insPayTypeVal = document.getElementById('ins_payment_type') ? document.getElementById('ins_payment_type').value : 'single';
+                if (insPayTypeVal === 'installment') {
+                    nextPayLabel.textContent = 'Sonraki Aylık Taksit Tarihi';
+                    if (nextPayHint) nextPayHint.classList.remove('hidden');
+                } else {
+                    nextPayLabel.textContent = 'Poliçe Yenileme Tarihi';
+                    if (nextPayHint) nextPayHint.classList.add('hidden');
+                }
+            } else {
+                nextPayLabel.textContent = 'Sonraki Ödeme Tarihi';
+                if (nextPayHint) nextPayHint.classList.add('hidden');
+            }
+        }
+
         // Telecom & GSM Modem Kontrolü
         if (catType === 'telecom') {
             guncelleTelecomDetaylari();
@@ -1229,6 +1076,14 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     window.guncelleKategoriDetaylari = guncelleKategoriDetaylari;
     catSelect.addEventListener('change', guncelleKategoriDetaylari);
+
+    const billingSelect = document.getElementById('billing_cycle_select');
+    const annualHint = document.getElementById('annual_cycle_hint');
+    if (billingSelect && annualHint) {
+        billingSelect.addEventListener('change', function() {
+            annualHint.classList.toggle('hidden', this.value !== 'annual');
+        });
+    }
 
     // Mobil Hat & GSM Modem Kira Bedeli Gizleme
     function guncelleTelecomDetaylari() {
@@ -1271,6 +1126,16 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // Taksit tutarından toplam poliçe tutarını hesapla
+    function hesaplaToplamTutari() {
+        if (!insInstCount || !insInstAmount || !priceInput) return;
+        const count = parseInt(insInstCount.value) || 1;
+        const instVal = parseFloat(insInstAmount.value.replace(',', '.')) || 0;
+        if (instVal > 0 && count > 0) {
+            priceInput.value = (instVal * count).toFixed(2);
+        }
+    }
+
     if (insPayType && insInstFields) {
         insPayType.addEventListener('change', function() {
             const isInst = this.value === 'installment';
@@ -1281,6 +1146,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 const insStartDate = document.querySelector('input[name="ins_start_date"]');
                 const nextPayDate = document.querySelector('input[name="next_payment_date"]');
+// clean
                 if (insStartDate && nextPayDate && insStartDate.value) {
                     nextPayDate.value = insStartDate.value;
                 }
@@ -1300,6 +1166,18 @@ document.addEventListener('DOMContentLoaded', function() {
         insInstCount.addEventListener('input', function() {
             if (insPayType && insPayType.value === 'installment') {
                 hesaplaTaksitTutari();
+            }
+        });
+    }
+
+    if (insInstAmount) {
+        insInstAmount.addEventListener('input', function() {
+            if (insPayType && insPayType.value === 'installment') {
+                const count = parseInt(insInstCount ? insInstCount.value : 1) || 1;
+                const instVal = parseFloat(this.value.replace(',', '.')) || 0;
+                if (instVal > 0 && count > 0 && (!priceInput.value || parseFloat(priceInput.value) <= 0)) {
+                    hesaplaToplamTutari();
+                }
             }
         });
     }

@@ -3,15 +3,43 @@
  * Abonelik ve Fatura Takip Sistemi - Merkezi AJAX ve API İşleyicisi
  */
 
-require_once __DIR__ . '/db.php';
+if (!ob_get_level()) {
+    ob_start();
+}
 
-header('Content-Type: application/json; charset=utf-8');
+// Hata gösterimini AJAX için kapat (hata olursa JSON olarak yakalayacağız)
+ini_set('display_errors', '0');
+error_reporting(E_ALL);
+
+/**
+ * JSON yanıt fonksiyonu: Tamponu tamamen temizler ve sadece saf JSON döner
+ */
+function jsonYanit(array $data, int $statusCode = 200) {
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+// Beklenmedik fatal error veya parse error durumlarını JSON formatında yakala
+register_shutdown_function(function() {
+    $error = error_get_last();
+    if ($error !== null && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR])) {
+        jsonYanit([
+            'success' => false,
+            'message' => 'Sunucu Hatası: ' . $error['message'] . ' (' . basename($error['file']) . ':' . $error['line'] . ')'
+        ], 500);
+    }
+});
+
+require_once __DIR__ . '/db.php';
 
 // Oturum Doğrulama (AJAX JSON yanıtlı: Kesinlikle 302 redirect üretmez, JSON döner)
 if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => 'Oturum süresi doldu, lütfen tekrar giriş yapın.']);
-    exit;
+    jsonYanit(['success' => false, 'message' => 'Oturum süresi doldu, lütfen tekrar giriş yapın.'], 401);
 }
 
 try {
@@ -19,18 +47,14 @@ try {
     $stmtAuth->execute([(int)$_SESSION['user_id']]);
     $uStatus = $stmtAuth->fetchColumn();
     if (!$uStatus || $uStatus === 'inactive') {
-        http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Hesap aktif değil veya silinmiş.']);
-        exit;
+        jsonYanit(['success' => false, 'message' => 'Hesap aktif değil veya silinmiş.'], 403);
     }
 } catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Veritabanı bağlantı hatası.']);
-    exit;
+    jsonYanit(['success' => false, 'message' => 'Veritabanı bağlantı hatası.'], 500);
 }
 
 $userId = (int)$_SESSION['user_id'];
-$action = $_GET['action'] ?? '';
+$action = $_GET['action'] ?? $_POST['action'] ?? '';
 
 switch ($action) {
 
@@ -95,19 +119,35 @@ switch ($action) {
 
     // 2. Dijital Hesap Şifresi Getirme (Master PIN Korumalı & Üye Yetkilendirmeli)
     case 'sifre_getir':
-        // CSRF Koruması: Cross-site PIN brute-force saldırılarını engeller
-        csrfKontrol($_POST['csrf_token'] ?? '');
+        // CSRF Koruması (JSON yanıtlı, sessizce çökmez)
+        $csrfToken = $_POST['csrf_token'] ?? $_GET['csrf_token'] ?? '';
+        if (empty($csrfToken) || empty($_SESSION['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $csrfToken)) {
+            jsonYanit(['success' => false, 'message' => 'Güvenlik oturumu süresi doldu (CSRF). Lütfen sayfayı yenileyip tekrar deneyin.']);
+        }
+
         // subId ve pin POST body'den alınıyor (GET ile log/geçmişe düşmesini önlemek için)
         $subId = (int)($_POST['id'] ?? $_GET['id'] ?? 0);
         $pin = trim($_POST['pin'] ?? '');
 
-        // Bu kullanıcının şifreyi görme yetkisi var mı?
-        if (!kullaniciSifreGorebilirMi($subId, $userId, $_SESSION['role'] ?? 'USER')) {
-            echo json_encode(['success' => false, 'message' => 'Bu aboneliğin hesap şifresini görüntüleme yetkiniz bulunmuyor.']);
-            exit;
+        if (!$subId) {
+            jsonYanit(['success' => false, 'message' => 'Geçersiz abonelik seçimi.']);
         }
 
+        // Bu kullanıcının şifreyi görme yetkisi var mı?
+        if (!kullaniciSifreGorebilirMi($subId, $userId, $_SESSION['role'] ?? 'USER')) {
+            jsonYanit(['success' => false, 'message' => 'Bu aboneliğin hesap şifresini görüntüleme yetkiniz bulunmuyor.']);
+        }
+
+        // Kullanıcının Master PIN'i var mı kontrol et
+        $hasMasterPin = false;
+        try {
+            $stmtUserPin = $pdo->prepare("SELECT master_pin_hash FROM users WHERE id = ?");
+            $stmtUserPin->execute([$userId]);
+            $hasMasterPin = !empty($stmtUserPin->fetchColumn());
+        } catch (Exception $e) {}
+
         // PIN Brute-force koruması (Veritabanı tabanlı: pin_attempts)
+        $pinAttempt = null;
         try {
             $stmtPin = $pdo->prepare("SELECT attempts, locked_until FROM pin_attempts WHERE user_id = ?");
             $stmtPin->execute([$userId]);
@@ -115,12 +155,10 @@ switch ($action) {
 
             if ($pinAttempt && !empty($pinAttempt['locked_until']) && strtotime($pinAttempt['locked_until']) > time()) {
                 $kalan = ceil((strtotime($pinAttempt['locked_until']) - time()) / 60);
-                echo json_encode(['success' => false, 'message' => "Çok fazla hatalı deneme. PIN erişimi kilitli: {$kalan} dakika."]);
-                exit;
+                jsonYanit(['success' => false, 'message' => "Çok fazla hatalı deneme. PIN erişimi kilitli: {$kalan} dakika."]);
             }
         } catch (Exception $e) {
             sistemLogla("PIN attempt sorgu hatası: " . $e->getMessage(), 'ERROR');
-            $pinAttempt = null;
         }
 
         // Eğer PIN gönderildiyse doğrula
@@ -138,8 +176,7 @@ switch ($action) {
                     ");
                     $stmtLock->execute([$userId, $newAttempts, $lockedUntil, $newAttempts, $lockedUntil]);
                     sistemLogla("Master PIN Brute-Force Kilitlendi: User ID {$userId}", 'SECURITY');
-                    echo json_encode(['success' => false, 'message' => '5 hatalı deneme! Güvenlik nedeniyle PIN girişi 5 dakika kilitlendi.']);
-                    exit;
+                    jsonYanit(['success' => false, 'message' => '5 hatalı deneme! Güvenlik nedeniyle doğrulama 5 dakika kilitlendi.']);
                 } else {
                     $stmtUpsert = $pdo->prepare("
                         INSERT INTO pin_attempts (user_id, attempts, last_attempt, locked_until)
@@ -148,8 +185,8 @@ switch ($action) {
                     ");
                     $stmtUpsert->execute([$userId]);
                     $kalanHak = 5 - $newAttempts;
-                    echo json_encode(['success' => false, 'message' => "Geçersiz Master PIN kodu! (Kalan hak: {$kalanHak})"]);
-                    exit;
+                    $errHint = $hasMasterPin ? "Geçersiz Master PIN kodu!" : "Geçersiz giriş şifresi!";
+                    jsonYanit(['success' => false, 'message' => "{$errHint} (Kalan deneme hakkı: {$kalanHak})"]);
                 }
             }
 
@@ -163,8 +200,11 @@ switch ($action) {
 
         // Session'da PIN kilidi açık mı?
         if (!masterPinAktifMi()) {
-            echo json_encode(['success' => false, 'require_pin' => true]);
-            exit;
+            jsonYanit([
+                'success' => false,
+                'require_pin' => true,
+                'has_pin' => $hasMasterPin
+            ]);
         }
 
         try {
@@ -177,15 +217,18 @@ switch ($action) {
             $row = $stmt->fetch();
 
             if (!$row || empty($row['account_password_encrypted'])) {
-                echo json_encode(['success' => false, 'message' => 'Kayıtlı şifre bulunamadı.']);
-                exit;
+                jsonYanit(['success' => false, 'message' => 'Bu abonelik için kayıtlı şifre bulunamadı.']);
             }
 
             $plainPassword = sifreCoz($row['account_password_encrypted'], $row['encryption_iv']);
-            echo json_encode(['success' => true, 'password' => $plainPassword]);
+            if ($plainPassword === false || $plainPassword === '') {
+                jsonYanit(['success' => false, 'message' => 'Şifre çözülemedi. Veritabanındaki şifreleme anahtarı (.env) eşleşmiyor olabilir.']);
+            }
+
+            jsonYanit(['success' => true, 'password' => $plainPassword]);
         } catch (Exception $e) {
             sistemLogla('Şifre çözme hatası: ' . $e->getMessage(), 'ERROR');
-            echo json_encode(['success' => false, 'message' => 'Şifre çözme işlemi başarısız oldu. Lütfen tekrar deneyin.']);
+            jsonYanit(['success' => false, 'message' => 'Şifre çözme işlemi başarısız oldu: ' . $e->getMessage()]);
         }
         break;
 
@@ -300,7 +343,6 @@ switch ($action) {
     case 'test_mail':
         csrfKontrol($_POST['csrf_token'] ?? '');
 
-        use PHPMailer\PHPMailer\PHPMailer;
         require_once __DIR__ . '/PHPMailer/Exception.php';
         require_once __DIR__ . '/PHPMailer/PHPMailer.php';
         require_once __DIR__ . '/PHPMailer/SMTP.php';
@@ -316,18 +358,17 @@ switch ($action) {
         $toEmail = $_SESSION['user_data']['email'] ?? env('NOTIFICATION_EMAIL');
 
         if (empty($smtpHost) || empty($smtpUser) || empty($smtpPass)) {
-            echo json_encode(['success' => false, 'message' => 'SMTP ayarları eksik! Lütfen .env dosyasını kontrol edin.']);
-            exit;
+            jsonYanit(['success' => false, 'message' => 'SMTP ayarları eksik! Lütfen .env dosyasını kontrol edin.']);
         }
 
         try {
-            $mail = new PHPMailer(true);
+            $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
             $mail->isSMTP();
             $mail->Host       = $smtpHost;
             $mail->SMTPAuth   = true;
             $mail->Username   = $smtpUser;
             $mail->Password   = $smtpPass;
-            $mail->SMTPSecure = ($smtpSecure === 'ssl') ? PHPMailer::ENCRYPTION_SMTPS : (($smtpSecure === 'none') ? false : PHPMailer::ENCRYPTION_STARTTLS);
+            $mail->SMTPSecure = ($smtpSecure === 'ssl') ? \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS : (($smtpSecure === 'none') ? false : \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS);
             $mail->Port       = $smtpPort;
             $mail->CharSet    = 'UTF-8';
             $mail->isHTML(true);
@@ -344,10 +385,10 @@ switch ($action) {
                 </div>
             ";
             $mail->send();
-            echo json_encode(['success' => true, 'message' => "Test e-postası {$toEmail} adresine başarıyla gönderildi!"]);
+            jsonYanit(['success' => true, 'message' => "Test e-postası {$toEmail} adresine başarıyla gönderildi!"]);
         } catch (Exception $e) {
             sistemLogla('SMTP Test Mail Hatası: ' . $e->getMessage(), 'ERROR');
-            echo json_encode(['success' => false, 'message' => 'E-posta gönderilemedi. Lütfen SMTP ayarlarınızı kontrol edin.']);
+            jsonYanit(['success' => false, 'message' => 'E-posta gönderilemedi: ' . $e->getMessage()]);
         }
         break;
 
@@ -357,9 +398,9 @@ switch ($action) {
             $locId = (int)($_GET['location_id'] ?? $_POST['location_id'] ?? 0);
             $types = mekanKategoriTurleri($locId);
 
-            if (!empty($types) && count($types) < 7) {
+            if (!empty($types) && count($types) < 8) {
                 $placeholders = implode(',', array_fill(0, count($types), '?'));
-                $stmtCats = $pdo->prepare("SELECT id, name, slug, type, icon, color, sort_order FROM categories WHERE type IN ($placeholders) ORDER BY sort_order ASC, name ASC");
+                $stmtCats = $pdo->prepare("SELECT id, name, slug, type, icon, color, sort_order FROM categories WHERE type IN ($placeholders) OR (('tax' IN ($placeholders) OR 'vergi' IN ($placeholders)) AND (LOWER(name) LIKE '%vergi%' OR LOWER(slug) LIKE '%vergi%' OR LOWER(name) LIKE '%maliye%' OR name = 'GSS') AND LOWER(name) NOT LIKE '%motorlu%') ORDER BY sort_order ASC, name ASC");
                 $stmtCats->execute($types);
                 $cats = $stmtCats->fetchAll(PDO::FETCH_ASSOC);
             } else {
@@ -547,7 +588,7 @@ switch ($action) {
             $isAdmin = (($_SESSION['role'] ?? 'USER') === 'ADMIN');
             $authCheck = $isAdmin ? "1=1" : "(s.user_id = {$userId} OR s.payer_user_id = {$userId})";
             $stmt = $pdo->prepare("
-                SELECT s.id, s.title, s.currency, t.post_commitment_price 
+                SELECT s.id, s.title, s.price, s.currency, t.post_commitment_price 
                 FROM subscriptions s
                 JOIN subscription_telecom_details t ON s.id = t.subscription_id
                 WHERE s.id = ? AND {$authCheck}
@@ -559,8 +600,25 @@ switch ($action) {
                 exit;
             }
 
+            $oldPrice = (float)($row['price'] ?? 0);
             $newPrice = (float)$row['post_commitment_price'];
             $pdo->prepare("UPDATE subscriptions SET price = ? WHERE id = ?")->execute([$newPrice, $subId]);
+
+            // Fiyat değişimi varsa geçmişe kaydet
+            if ($oldPrice > 0 && abs($newPrice - $oldPrice) >= 0.01) {
+                $pct = round((($newPrice - $oldPrice) / $oldPrice) * 100, 2);
+                try {
+                    $stmtHist = $pdo->prepare("
+                        INSERT INTO `subscription_price_history` 
+                        (`subscription_id`, `user_id`, `old_price`, `new_price`, `percentage_change`, `currency`, `notes`, `changed_at`)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+                    ");
+                    $stmtHist->execute([$subId, $_SESSION['user_id'] ?? 1, $oldPrice, $newPrice, $pct, $row['currency'] ?? 'TRY', 'Taahhüt bitişi sonrası yeni tarife fiyatı uygulandı']);
+                } catch (Exception $e) {
+                    sistemLogla("Taahhüt fiyat geçmişi kaydı hatası: " . $e->getMessage(), 'WARNING');
+                }
+            }
+
             sistemLogla("Taahhüt Bitişi Nedeniyle Zamlı Fiyat Uygulandı: ID {$subId} ({$row['title']}) -> " . $newPrice, 'INFO');
             echo json_encode([
                 'success' => true,
@@ -574,7 +632,68 @@ switch ($action) {
         }
         break;
 
+    // 11. Abonelik Durum Değiştirme (Aktif / Dondur / İptal Et)
+    case 'durum_degistir':
+        csrfKontrol($_POST['csrf_token'] ?? '');
+        $subId = (int)($_POST['subscription_id'] ?? $_POST['id'] ?? 0);
+        $newStatus = trim($_POST['status'] ?? '');
+        if (!$subId || !in_array($newStatus, ['active', 'paused', 'canceled', 'cancelled'])) {
+            echo json_encode(['success' => false, 'message' => 'Geçersiz parametreler.']);
+            exit;
+        }
+        if ($newStatus === 'cancelled') $newStatus = 'canceled';
+
+        try {
+            $isAdmin = (($_SESSION['role'] ?? 'USER') === 'ADMIN');
+            $authCheck = $isAdmin ? "1=1" : "(user_id = {$userId} OR payer_user_id = {$userId})";
+            $stmt = $pdo->prepare("SELECT id, title FROM subscriptions WHERE id = ? AND {$authCheck}");
+            $stmt->execute([$subId]);
+            $sub = $stmt->fetch();
+            if (!$sub) {
+                echo json_encode(['success' => false, 'message' => 'Abonelik bulunamadı veya yetkiniz yok.']);
+                exit;
+            }
+
+            $pdo->prepare("UPDATE subscriptions SET status = ? WHERE id = ?")->execute([$newStatus, $subId]);
+            $statusLabels = ['active' => 'Aktif', 'paused' => 'Donduruldu', 'canceled' => 'İptal Edildi'];
+            $label = $statusLabels[$newStatus] ?? $newStatus;
+            sistemLogla("Abonelik Durumu Değiştirildi: ID {$subId} ({$sub['title']}) -> " . $label, 'INFO');
+            echo json_encode([
+                'success' => true,
+                'message' => "'{$sub['title']}' aboneliği başarıyla '{$label}' durumuna alındı."
+            ]);
+        } catch (Exception $e) {
+            sistemLogla("Abonelik durum değiştirme hatası: " . $e->getMessage(), 'ERROR');
+            echo json_encode(['success' => false, 'message' => 'Hata: ' . $e->getMessage()]);
+        }
+    // 12. Aylık Bütçe Limiti Güncelleme
+    case 'butce_guncelle':
+        csrfKontrol($_POST['csrf_token'] ?? '');
+        $rawVal = trim($_POST['monthly_budget'] ?? '0');
+        $rawVal = str_replace(' ', '', $rawVal);
+        if (strpos($rawVal, ',') !== false && strpos($rawVal, '.') !== false) {
+            $rawVal = str_replace('.', '', $rawVal);
+            $rawVal = str_replace(',', '.', $rawVal);
+        } else {
+            $rawVal = str_replace(',', '.', $rawVal);
+        }
+        $budget = max(0, (float)$rawVal);
+        try {
+            $pdo->prepare("UPDATE users SET monthly_budget = ? WHERE id = ?")->execute([$budget, $userId]);
+            sistemLogla("AJAX: Aylık Bütçe Hedefi Güncellendi: {$budget} ₺ (User ID {$userId})", 'INFO');
+            jsonYanit([
+                'success' => true,
+                'message' => 'Aylık bütçe hedefiniz başarıyla güncellendi.',
+                'monthly_budget' => $budget,
+                'monthly_budget_formatted' => paraFormat($budget, 'TRY')
+            ]);
+        } catch (Exception $e) {
+            sistemLogla("Bütçe güncelleme hatası: " . $e->getMessage(), 'ERROR');
+            jsonYanit(['success' => false, 'message' => 'Bütçe güncellenirken bir hata oluştu: ' . $e->getMessage()], 500);
+        }
+        break;
+
     default:
-        echo json_encode(['success' => false, 'message' => 'Bilinmeyen işlem.']);
+        jsonYanit(['success' => false, 'message' => 'Bilinmeyen işlem.']);
         break;
 }

@@ -16,7 +16,7 @@
 </footer>
 
 <!-- PWA & Tema Yonetim Scriptleri -->
-<script nonce="<?= $cspNonce ?>">
+<script>
     // 1. Tema Degistirme Mantigi
     function guncelleTemaIkonlari() {
         const isDark = document.documentElement.classList.contains('dark');

@@ -1,7 +1,7 @@
 <?php
 // kredi-kartlari.php - Kartlar & Banka Hesapları Yönetim Merkezi
-$pageTitle = "Kartlar & Banka Hesapları - Abonelik Takip";
-require_once __DIR__ . '/header.php';
+require_once __DIR__ . '/db.php';
+girisKontrol();
 
 $userId = (int)$_SESSION['user_id'];
 $userRole = $_SESSION['role'] ?? 'USER';
@@ -52,7 +52,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $statementCutDay = (int)($_POST['statement_cut_day'] ?? 1);
         $dueDay = (int)($_POST['due_day'] ?? 10);
         $limitAmount = !empty($_POST['limit_amount']) ? (float)str_replace(',', '.', $_POST['limit_amount']) : null;
-        $color = $_POST['color'] ?? 'from-slate-800 to-slate-950';
+        $color = str_replace('slate-850', 'slate-800', $_POST['color'] ?? 'from-slate-800 to-slate-950');
         $cardOwnerId = ($isAdmin && !empty($_POST['user_id'])) ? (int)$_POST['user_id'] : $userId;
 
         if (empty($bankName) || empty($cardName)) {
@@ -75,8 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
 
-                header("Location: kredi-kartlari.php?tab=cards&msg=added");
-                exit;
+                guvenliYonlendir("kredi-kartlari.php?tab=cards&msg=added");
             } catch (Exception $e) {
                 sistemLogla("Kart ekleme hatası: " . $e->getMessage(), 'ERROR');
                 $error = "Kart kaydedilirken bir hata oluştu.";
@@ -93,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $statementCutDay = (int)($_POST['statement_cut_day'] ?? 1);
         $dueDay = (int)($_POST['due_day'] ?? 10);
         $limitAmount = !empty($_POST['limit_amount']) ? (float)str_replace(',', '.', $_POST['limit_amount']) : null;
-        $color = $_POST['color'] ?? 'from-slate-800 to-slate-950';
+        $color = str_replace('slate-850', 'slate-800', $_POST['color'] ?? 'from-slate-800 to-slate-950');
         $cardOwnerId = ($isAdmin && !empty($_POST['user_id'])) ? (int)$_POST['user_id'] : $userId;
 
         if (empty($bankName) || empty($cardName)) {
@@ -114,11 +113,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt->execute($params);
                 sistemLogla("Kredi Kartı Güncellendi: {$bankName} - {$cardName} (ID: {$cardId})", 'INFO');
-                header("Location: kredi-kartlari.php?tab=cards&msg=updated");
-                exit;
+                guvenliYonlendir("kredi-kartlari.php?tab=cards&msg=updated");
             } catch (Exception $e) {
                 sistemLogla("Kart güncelleme hatası: " . $e->getMessage(), 'ERROR');
-                $error = "Kart güncellenirken bir hata oluştu.";
+                $error = "Kart güncellenirken bir hata oluştu: " . $e->getMessage();
             }
         }
     } 
@@ -126,14 +124,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'delete' || $action === 'delete_card') {
         $cardId = (int)($_POST['card_id'] ?? 0);
         try {
+            // Bağlı aboneliklerin referansını temizle
+            $stmtUnlink = $pdo->prepare("UPDATE subscriptions SET credit_card_id = NULL WHERE credit_card_id = ?");
+            $stmtUnlink->execute([$cardId]);
+
             $stmt = $pdo->prepare("DELETE FROM credit_cards WHERE id = ?" . ($isAdmin ? "" : " AND user_id = ?"));
             $stmt->execute($isAdmin ? [$cardId] : [$cardId, $userId]);
             sistemLogla("Kredi Kartı Silindi (ID: {$cardId})", 'WARNING');
-            header("Location: kredi-kartlari.php?tab=cards&msg=deleted");
-            exit;
+            guvenliYonlendir("kredi-kartlari.php?tab=cards&msg=deleted");
         } catch (Exception $e) {
             sistemLogla("Kart silme hatası: " . $e->getMessage(), 'ERROR');
-            $error = "Kart silinirken bir hata oluştu.";
+            $error = "Kart silinirken bir hata oluştu: " . $e->getMessage();
         }
     }
     // 4. BANKA HESABI EKLE
@@ -163,11 +164,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     exit;
                 }
 
-                header("Location: kredi-kartlari.php?tab=bank&msg=bank_added");
-                exit;
+                guvenliYonlendir("kredi-kartlari.php?tab=bank&msg=bank_added");
             } catch (Exception $e) {
                 sistemLogla("Banka hesabı ekleme hatası: " . $e->getMessage(), 'ERROR');
-                $error = "Banka hesabı kaydedilirken hata oluştu.";
+                $error = "Banka hesabı kaydedilirken hata oluştu: " . $e->getMessage();
             }
         }
     }
@@ -198,11 +198,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmt->execute($params);
                 sistemLogla("Banka Hesabı Güncellendi: {$title} (ID: {$bankId})", 'INFO');
-                header("Location: kredi-kartlari.php?tab=bank&msg=bank_updated");
-                exit;
+                guvenliYonlendir("kredi-kartlari.php?tab=bank&msg=bank_updated");
             } catch (Exception $e) {
                 sistemLogla("Banka hesabı güncelleme hatası: " . $e->getMessage(), 'ERROR');
-                $error = "Hesap güncellenirken hata oluştu.";
+                $error = "Hesap güncellenirken hata oluştu: " . $e->getMessage();
             }
         }
     }
@@ -210,14 +209,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     elseif ($action === 'delete_bank') {
         $bankId = (int)($_POST['bank_id'] ?? 0);
         try {
+            // Bağlı aboneliklerin referansını temizle
+            $stmtUnlink = $pdo->prepare("UPDATE subscriptions SET payment_method_id = NULL WHERE payment_method_id = ?");
+            $stmtUnlink->execute([$bankId]);
+
             $stmt = $pdo->prepare("DELETE FROM payment_methods WHERE id = ?" . ($isAdmin ? "" : " AND user_id = ?"));
             $stmt->execute($isAdmin ? [$bankId] : [$bankId, $userId]);
             sistemLogla("Banka Hesabı Silindi (ID: {$bankId})", 'WARNING');
-            header("Location: kredi-kartlari.php?tab=bank&msg=bank_deleted");
-            exit;
+            guvenliYonlendir("kredi-kartlari.php?tab=bank&msg=bank_deleted");
         } catch (Exception $e) {
             sistemLogla("Banka hesabı silme hatası: " . $e->getMessage(), 'ERROR');
-            $error = "Hesap silinirken hata oluştu.";
+            $error = "Hesap silinirken hata oluştu: " . $e->getMessage();
         }
     }
 }
@@ -306,6 +308,9 @@ function hedefGunTarihi($gun) {
     $kalan = (int)$diff->format('%r%a');
     return ['tarih' => $hedef->format('Y-m-d'), 'kalan' => $kalan];
 }
+
+$pageTitle = "Kartlar & Banka Hesapları - Abonelik Takip";
+require_once __DIR__ . '/header.php';
 ?>
 
 <div class="max-w-6xl mx-auto space-y-6">
@@ -413,7 +418,13 @@ function hedefGunTarihi($gun) {
                     <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm hover:shadow-md transition flex flex-col justify-between">
                         
                         <!-- Sanal Kredi Karti Mockup -->
-                        <div class="w-full h-44 rounded-xl p-4 bg-gradient-to-br <?= htmlspecialchars($card['color']) ?> border border-white/10 shadow-lg relative flex flex-col justify-between overflow-hidden">
+                        <?php
+                            $cardColor = $card['color'] ?: 'from-slate-800 to-slate-950';
+                            if (strpos($cardColor, 'slate-850') !== false) {
+                                $cardColor = str_replace('slate-850', 'slate-800', $cardColor);
+                            }
+                        ?>
+                        <div class="w-full h-44 rounded-xl p-4 bg-slate-900 bg-gradient-to-br <?= htmlspecialchars($cardColor) ?> border border-slate-700/50 dark:border-white/10 shadow-lg relative flex flex-col justify-between overflow-hidden">
                             <div class="absolute -right-10 -bottom-10 w-40 h-40 rounded-full bg-white/5 blur-2xl pointer-events-none"></div>
 
                             <!-- Banka & Network -->
@@ -680,7 +691,7 @@ function hedefGunTarihi($gun) {
                 <div>
                     <label class="block text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Kart Rengi</label>
                     <select name="color" id="formColor" class="w-full p-2.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-xs focus:ring-2 focus:ring-blue-500 outline-none">
-                        <option value="from-slate-850 to-slate-950">⚫ Platin / Karbon Siyahı</option>
+                        <option value="from-slate-800 to-slate-950">⚫ Platin / Karbon Siyahı</option>
                         <option value="from-amber-600 to-yellow-800">🟡 Bonus Altın Sarısı</option>
                         <option value="from-blue-700 to-indigo-950">🔵 Gece Mavisi</option>
                         <option value="from-emerald-700 to-teal-950">🟢 Zümrüt Yeşili</option>
@@ -772,7 +783,7 @@ function hedefGunTarihi($gun) {
     </div>
 </div>
 
-<script nonce="<?= $cspNonce ?>">
+<script>
 document.addEventListener('DOMContentLoaded', function() {
     const cardModal = document.getElementById('cardModal');
     const bankModal = document.getElementById('bankModal');
@@ -804,8 +815,9 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('formCardLast4').value = card.card_last_4 || '';
         document.getElementById('formStatementDay').value = card.statement_cut_day || '';
         document.getElementById('formDueDay').value = card.due_day || '';
-        if (document.getElementById('formLimitAmount')) document.getElementById('formLimitAmount').value = card.limit_amount || '';
-        document.getElementById('formColor').value = card.color || 'from-slate-800 to-slate-950';
+        let cardCol = card.color || 'from-slate-800 to-slate-950';
+        if (cardCol.includes('slate-850')) cardCol = cardCol.replace('slate-850', 'slate-800');
+        document.getElementById('formColor').value = cardCol;
         if (document.getElementById('formUserId')) {
             document.getElementById('formUserId').value = card.user_id || '';
         }

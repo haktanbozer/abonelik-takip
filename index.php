@@ -74,13 +74,17 @@ try {
         $stmtCurrencies = $pdo->prepare("
             SELECT 
                 s.currency,
-                COALESCE(SUM(CASE WHEN s.billing_cycle = 'monthly' THEN s.price 
+                COALESCE(SUM(CASE
+                                  WHEN c.type = 'insurance' AND ins.payment_type = 'installment' AND COALESCE(ins.installment_amount, 0) > 0 THEN ins.installment_amount
+                                  WHEN s.billing_cycle = 'monthly' THEN s.price 
                                   WHEN s.billing_cycle = 'annual' THEN s.price / 12 
                                   WHEN s.billing_cycle = 'quarterly' THEN s.price / 3 
                                   WHEN s.billing_cycle = 'semi_annual' THEN s.price / 6 
                                   WHEN s.billing_cycle = 'one_time' THEN 0 
                                   ELSE s.price END), 0) as gross_monthly,
-                COALESCE(SUM(CASE WHEN s.billing_cycle = 'monthly' THEN s.cashback_amount 
+                COALESCE(SUM(CASE
+                                  WHEN c.type = 'insurance' AND ins.payment_type = 'installment' AND COALESCE(ins.installment_amount, 0) > 0 THEN s.cashback_amount
+                                  WHEN s.billing_cycle = 'monthly' THEN s.cashback_amount 
                                   WHEN s.billing_cycle = 'annual' THEN s.cashback_amount / 12 
                                   WHEN s.billing_cycle = 'quarterly' THEN s.cashback_amount / 3 
                                   WHEN s.billing_cycle = 'semi_annual' THEN s.cashback_amount / 6 
@@ -88,6 +92,8 @@ try {
                                   ELSE s.cashback_amount END), 0) as cashback_monthly,
                 COALESCE(SUM((SELECT COALESCE(SUM(sh.share_amount), 0) FROM subscription_shares sh WHERE sh.subscription_id = s.id AND sh.is_paid = 1)), 0) as shares_monthly
             FROM subscriptions s
+            LEFT JOIN categories c ON s.category_id = c.id
+            LEFT JOIN subscription_insurance_details ins ON s.id = ins.subscription_id
             WHERE s.status = 'active' {$locSql}
             GROUP BY s.currency
             ORDER BY FIELD(s.currency, 'TRY', 'USD', 'EUR', 'GBP'), s.currency ASC
@@ -183,6 +189,7 @@ try {
                 u.username, 
                 u.full_name, 
                 u.role,
+                COALESCE(u.monthly_budget, 0) as monthly_budget,
                 COUNT(s.id) as sub_count,
                 COALESCE(SUM(CASE 
                     WHEN c.type = 'insurance' AND ins.payment_type = 'installment' AND COALESCE(ins.installment_amount, 0) > 0 THEN ins.installment_amount
@@ -478,6 +485,55 @@ try {
     $upcomingInsurances = [];
     $categoryStats = [];
 }
+
+// Atıl Abonelik ve Tasarruf Dedektörü Verileri
+$tasarrufOnerileri = tasarrufOnerileriniGetir($userId, $isAdmin, $aktifKonumId);
+
+// 2. Kullanıcı Bütçe Limiti & Harcama Oranı Hesaplama
+$userMonthlyBudget = 0.00;
+try {
+    $stmtUB = $pdo->prepare("SELECT COALESCE(monthly_budget, 0) FROM users WHERE id = ?");
+    $stmtUB->execute([$userId]);
+    $userMonthlyBudget = (float)$stmtUB->fetchColumn();
+} catch (Exception $e) {
+    $userMonthlyBudget = 0.00;
+}
+
+// Bütçe takibi TRY cinsinden net harcama baz alınarak yapılır
+$userSpentTRY = (float)($myNetTotalsByCurrency['TRY'] ?? 0);
+$hasMonthlyBudget = ($userMonthlyBudget > 0);
+$budgetPercent = $hasMonthlyBudget ? round(($userSpentTRY / $userMonthlyBudget) * 100, 1) : 0;
+$budgetRemaining = $hasMonthlyBudget ? ($userMonthlyBudget - $userSpentTRY) : 0;
+$barWidthPercent = min(100, max(0, $budgetPercent));
+
+if ($budgetPercent > 100) {
+    $budgetStatus = 'danger';
+    $budgetThemeBorder = 'border-rose-500/40';
+    $budgetThemeBg = 'bg-rose-500/5 dark:bg-rose-950/20';
+    $budgetBarColor = 'bg-gradient-to-r from-rose-500 to-red-600';
+    $budgetBadge = 'bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30';
+    $budgetStatusText = 'Limit Aşıldı!';
+    $budgetStatusIcon = '🚨';
+    $descText = 'Aylık bütçe limitinizi ' . paraFormat(abs($budgetRemaining)) . ' aştınız! Lütfen gereksiz aboneliklerinizi gözden geçirin.';
+} elseif ($budgetPercent >= 75) {
+    $budgetStatus = 'warning';
+    $budgetThemeBorder = 'border-amber-500/40';
+    $budgetThemeBg = 'bg-amber-500/5 dark:bg-amber-950/20';
+    $budgetBarColor = 'bg-gradient-to-r from-amber-500 to-orange-500';
+    $budgetBadge = 'bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300 border border-amber-200 dark:border-amber-500/30';
+    $budgetStatusText = 'Bütçe Limitine Yaklaşıldı';
+    $budgetStatusIcon = '⚠️';
+    $descText = 'Aylık bütçenizin <b>%' . $budgetPercent . '</b> kadarı doldu. Kalan harcama payınız: <b>' . paraFormat($budgetRemaining) . '</b>.';
+} else {
+    $budgetStatus = 'safe';
+    $budgetThemeBorder = 'border-emerald-500/30';
+    $budgetThemeBg = 'bg-emerald-500/5 dark:bg-emerald-950/20';
+    $budgetBarColor = 'bg-gradient-to-r from-emerald-500 to-teal-500';
+    $budgetBadge = 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30';
+    $budgetStatusText = 'Bütçeniz Güvende';
+    $budgetStatusIcon = '🎯';
+    $descText = 'Aylık bütçenizin <b>%' . $budgetPercent . '</b> kadarı kullanıldı. Kalan harcama payınız: <b>' . paraFormat($budgetRemaining) . '</b>.';
+}
 ?>
 
 <!-- Üst Bilgi Başlığı -->
@@ -589,6 +645,135 @@ try {
 
 </div>
 
+<!-- Aylık Bütçe Limiti & Harcama Uyarı Çubuğu -->
+<div id="monthly-budget-container" class="mb-6">
+    <?php if ($hasMonthlyBudget): ?>
+        <div class="bg-white dark:bg-slate-900 border <?= $budgetThemeBorder ?> rounded-3xl p-5 sm:p-6 shadow-sm transition-all duration-300 relative overflow-hidden <?= $budgetThemeBg ?>">
+            <!-- Üst Başlık ve Rozet -->
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 mb-4 border-b border-slate-100 dark:border-slate-800/80">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-xl shadow-sm bg-white dark:bg-slate-800 border border-slate-200/80 dark:border-slate-700">
+                        <?= $budgetStatusIcon ?>
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base font-bold text-slate-900 dark:text-white">Aylık Bütçe Limiti &amp; Harcama Takibi</h2>
+                            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-extrabold <?= $budgetBadge ?> shadow-sm">
+                                <?= $budgetStatusText ?> (%<?= $budgetPercent ?>)
+                            </span>
+                        </div>
+                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            <?= $descText ?>
+                        </p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2 self-start sm:self-auto">
+                    <button type="button" onclick="toggleBudgetEdit()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border border-slate-200 dark:border-slate-700">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                        <span>Limiti Düzenle</span>
+                    </button>
+                    <a href="profil.php" class="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition" title="Profil Ayarları">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Hızlı Bütçe Güncelleme Çekmecesi / Formu (Varsayılan gizli) -->
+            <div id="budget-edit-box" class="hidden mb-4 p-4 bg-white/90 dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 rounded-2xl backdrop-blur-sm">
+                <form id="form-update-budget" onsubmit="saveBudgetAjax(event)" class="flex flex-col sm:flex-row items-center gap-2.5">
+                    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?? '' ?>">
+                    <div class="relative w-full sm:w-64">
+                        <input type="number" step="0.01" min="0" name="monthly_budget" id="input_monthly_budget" value="<?= htmlspecialchars((string)$userMonthlyBudget) ?>" placeholder="Örn: 3500.00" required
+                            class="w-full p-2.5 pl-8 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none">
+                        <span class="absolute left-3 top-2.5 text-slate-400 font-bold text-xs">₺</span>
+                    </div>
+                    <div class="flex items-center gap-2 w-full sm:w-auto">
+                        <button type="submit" id="btn-save-budget" class="flex-1 sm:flex-initial px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-sm">
+                            Kaydet
+                        </button>
+                        <button type="button" onclick="toggleBudgetEdit()" class="px-3 py-2.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold transition">
+                            Vazgeç
+                        </button>
+                    </div>
+                    <span class="text-[11px] text-slate-400 sm:ml-auto">Bütçeyi kapatmak için 0 yazabilirsiniz.</span>
+                </form>
+            </div>
+
+            <!-- İstatistik Sayıları (4'lü Grid) -->
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                <div class="p-3 bg-white/70 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800/80 rounded-2xl">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Harcanan (Net)</span>
+                    <span class="text-base sm:text-lg font-black text-slate-900 dark:text-white"><?= paraFormat($userSpentTRY) ?></span>
+                </div>
+                <div class="p-3 bg-white/70 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800/80 rounded-2xl">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Hedef Bütçe</span>
+                    <span class="text-base sm:text-lg font-black text-slate-700 dark:text-slate-300"><?= paraFormat($userMonthlyBudget) ?></span>
+                </div>
+                <div class="p-3 bg-white/70 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800/80 rounded-2xl">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5"><?= $budgetRemaining >= 0 ? 'Kalan Bütçe' : 'Bütçe Aşımı' ?></span>
+                    <span class="text-base sm:text-lg font-black <?= $budgetRemaining >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400' ?>">
+                        <?= $budgetRemaining >= 0 ? paraFormat($budgetRemaining) : '-' . paraFormat(abs($budgetRemaining)) ?>
+                    </span>
+                </div>
+                <div class="p-3 bg-white/70 dark:bg-slate-950/50 border border-slate-100 dark:border-slate-800/80 rounded-2xl">
+                    <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-0.5">Kullanım Oranı</span>
+                    <span class="text-base sm:text-lg font-black <?= $budgetPercent > 100 ? 'text-rose-600 dark:text-rose-400' : ($budgetPercent >= 75 ? 'text-amber-600 dark:text-amber-400' : 'text-blue-600 dark:text-blue-400') ?>">
+                        %<?= $budgetPercent ?>
+                    </span>
+                </div>
+            </div>
+
+            <!-- İlerleme Çubuğu (Progress Bar) -->
+            <div class="space-y-1.5">
+                <div class="relative w-full h-4 bg-slate-200/80 dark:bg-slate-800 rounded-full p-0.5 overflow-hidden">
+                    <div class="h-full rounded-full transition-all duration-700 ease-out <?= $budgetBarColor ?>" style="width: <?= $barWidthPercent ?>%;"></div>
+                    <!-- %75 Uyarı Çizgisi -->
+                    <div class="absolute top-0 bottom-0 left-3/4 w-0.5 bg-amber-400/50 dark:bg-amber-400/30" title="%75 Eşiği"></div>
+                </div>
+                <div class="flex items-center justify-between text-[10px] font-semibold text-slate-400 px-1">
+                    <span>0 ₺</span>
+                    <span class="hidden sm:inline text-amber-500/80">%75 Uyarı Seviyesi</span>
+                    <span>Hedef: <?= paraFormat($userMonthlyBudget) ?></span>
+                </div>
+            </div>
+        </div>
+
+    <?php else: ?>
+        <!-- Bütçe Belirlenmemiş Durum (Tanıtım ve Hızlı Ekleme) -->
+        <div class="bg-gradient-to-r from-blue-500/10 via-indigo-500/10 to-purple-500/10 border border-blue-500/20 rounded-3xl p-5 sm:p-6 shadow-sm">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                <div class="flex items-start gap-3.5">
+                    <div class="w-11 h-11 rounded-2xl bg-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center justify-center text-2xl shadow-sm shrink-0">
+                        🎯
+                    </div>
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base font-bold text-slate-900 dark:text-white">Aylık Bütçe Limiti Belirleyin</h2>
+                            <span class="px-2 py-0.5 bg-blue-500 text-white rounded-full text-[10px] font-extrabold shadow-sm">Yeni Özellik</span>
+                        </div>
+                        <p class="text-xs text-slate-600 dark:text-slate-400 mt-1 max-w-xl">
+                            Aylık maksimum ne kadar harcamak istediğinizi belirleyin. Bütçenizin doluluk oranını, kalan limitinizi ve harcama alarmlarını bu alandan anlık takip edin.
+                        </p>
+                    </div>
+                </div>
+
+                <form id="form-first-budget" onsubmit="saveBudgetAjax(event)" class="flex items-center gap-2 shrink-0">
+                    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?? '' ?>">
+                    <div class="relative w-44 sm:w-48">
+                        <input type="number" step="0.01" min="1" name="monthly_budget" placeholder="Örn: 3500" required
+                            class="w-full p-2.5 pl-8 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-slate-900 dark:text-white text-xs font-bold focus:ring-2 focus:ring-blue-500 outline-none">
+                        <span class="absolute left-3 top-2.5 text-slate-400 font-bold text-xs">₺</span>
+                    </div>
+                    <button type="submit" class="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl text-xs font-bold transition shadow-md shadow-blue-500/20 whitespace-nowrap">
+                        Hedef Belirle
+                    </button>
+                </form>
+            </div>
+        </div>
+    <?php endif; ?>
+</div>
+
 <!-- Kişisel Bütçeler & Sorumluluk Dağılımı Raporu (SADECE YÖNETİCİ GÖRÜR) -->
 <?php if ($isAdmin && !empty($personalBudgets) && count($personalBudgets) > 1): ?>
 <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm mb-6 transition-colors">
@@ -613,6 +798,86 @@ try {
                 </div>
                 <div class="text-base font-extrabold text-blue-600 dark:text-blue-400">
                     <?= paraFormat($pb['user_monthly']) ?>
+                </div>
+                <?php if ((float)($pb['monthly_budget'] ?? 0) > 0): 
+                    $uPct = round(((float)$pb['user_monthly'] / (float)$pb['monthly_budget']) * 100, 1);
+                    $uBar = min(100, max(0, $uPct));
+                    $uColor = $uPct > 100 ? 'bg-rose-500' : ($uPct >= 75 ? 'bg-amber-500' : 'bg-emerald-500');
+                    $uTextColor = $uPct > 100 ? 'text-rose-500' : ($uPct >= 75 ? 'text-amber-500' : 'text-emerald-500');
+                ?>
+                    <div class="mt-2 pt-2 border-t border-slate-200/60 dark:border-slate-800/80">
+                        <div class="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 mb-1">
+                            <span>Hedef: <?= paraFormat($pb['monthly_budget']) ?></span>
+                            <span class="font-bold <?= $uTextColor ?>">%<?= $uPct ?></span>
+                        </div>
+                        <div class="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                            <div class="<?= $uColor ?> h-full rounded-full transition-all duration-500" style="width: <?= $uBar ?>%;"></div>
+                        </div>
+                    </div>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- Atıl Abonelik & Tasarruf Dedektörü -->
+<?php if (!empty($tasarrufOnerileri['count'])): ?>
+<div class="bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-blue-500/10 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 mb-6 shadow-sm">
+    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-4 mb-4 border-b border-emerald-500/20">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 rounded-2xl bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xl shadow-sm">
+                💡
+            </div>
+            <div>
+                <div class="flex items-center gap-2">
+                    <h2 class="text-base font-bold text-slate-900 dark:text-white">Atıl Abonelik &amp; Tasarruf Dedektörü</h2>
+                    <span class="px-2 py-0.5 bg-emerald-500 text-white rounded-full text-[10px] font-extrabold shadow-sm">
+                        <?= $tasarrufOnerileri['count'] ?> Tasarruf Önerisi
+                    </span>
+                </div>
+                <p class="text-xs text-slate-600 dark:text-slate-400 mt-0.5">
+                    Kullanılmayan, dondurulan veya bitmek üzere olan servisleri tespit ettik.
+                </p>
+            </div>
+        </div>
+        <div class="text-left sm:text-right bg-white/70 dark:bg-slate-900/70 p-2.5 rounded-2xl border border-emerald-500/20">
+            <span class="text-[10px] uppercase font-bold text-slate-500 dark:text-slate-400 block">Yıllık Tasarruf Potansiyeli</span>
+            <span class="text-base sm:text-lg font-black text-emerald-600 dark:text-emerald-400">
+                +<?= dovizKucukRozetlerHtml($tasarrufOnerileri['total_annual_savings']) ?> / yıl
+            </span>
+        </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+        <?php foreach ($tasarrufOnerileri['items'] as $item): ?>
+            <div class="bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm border border-slate-200/80 dark:border-slate-800/80 rounded-2xl p-4 flex flex-col justify-between shadow-xs hover:shadow-md transition">
+                <div>
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <span class="px-2 py-0.5 rounded-lg text-[10px] font-bold <?= $item['badge_class'] ?>">
+                            <?= $item['badge'] ?>
+                        </span>
+                        <span class="text-xs font-black text-emerald-600 dark:text-emerald-400">
+                            +<?= paraFormat($item['annual_savings'], $item['currency']) ?> / yıl
+                        </span>
+                    </div>
+                    <h3 class="text-sm font-bold text-slate-900 dark:text-white truncate">
+                        <?= htmlspecialchars($item['title']) ?>
+                    </h3>
+                    <p class="text-[11px] text-slate-600 dark:text-slate-400 mt-1 line-clamp-2">
+                        <?= $item['recommendation'] ?>
+                    </p>
+                </div>
+
+                <div class="flex items-center justify-end gap-2 mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800">
+                    <?php if (!empty($item['can_cancel_direct'])): ?>
+                        <button type="button" onclick="abonelikIptalEt(<?= $item['id'] ?>, '<?= htmlspecialchars(addslashes($item['title'])) ?>')" class="px-3 py-1.5 bg-rose-50 dark:bg-rose-500/10 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-500/20 rounded-xl text-xs font-bold transition">
+                            İptal Et
+                        </button>
+                    <?php endif; ?>
+                    <a href="abonelik-detay.php?id=<?= $item['id'] ?>" class="px-3 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold transition">
+                        İncele &rarr;
+                    </a>
                 </div>
             </div>
         <?php endforeach; ?>
@@ -877,7 +1142,7 @@ try {
 </div>
 
 <!-- Deneme ve Taahhüt Güncelleme Scriptleri -->
-<script nonce="<?= $cspNonce ?>">
+<script>
 function normalAboneligeCevir(subId, title) {
     if (typeof Swal !== 'undefined') {
         Swal.fire({
@@ -968,6 +1233,133 @@ function postTarifeyeUyarla(subId) {
             }
         })
         .catch(() => alert('Sunucu bağlantı hatası.'));
+}
+
+function abonelikIptalEt(subId, baslik) {
+    if (typeof Swal !== 'undefined') {
+        Swal.fire({
+            title: 'Aboneliği İptal Et',
+            text: `"${baslik}" aboneliğini iptal edildi olarak işaretlemek istiyor musunuz?`,
+            icon: 'warning',
+            showCancelButton: true,
+            confirmButtonColor: '#ef4444',
+            cancelButtonColor: '#64748b',
+            confirmButtonText: 'Evet, İptal Et',
+            cancelButtonText: 'Vazgeç'
+        }).then((result) => {
+            if (result.isConfirmed) {
+                const formData = new FormData();
+                formData.append('action', 'durum_degistir');
+                formData.append('subscription_id', subId);
+                formData.append('status', 'canceled');
+                formData.append('csrf_token', '<?= $_SESSION['csrf_token'] ?? '' ?>');
+
+                fetch('ajax.php', { method: 'POST', body: formData })
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Başarılı',
+                                text: data.message || 'Abonelik iptal edildi.',
+                                showConfirmButton: false,
+                                timer: 1500
+                            }).then(() => location.reload());
+                        } else {
+                            Swal.fire('Hata', data.message || 'İşlem gerçekleştirilemedi.', 'error');
+                        }
+                    })
+                    .catch(() => Swal.fire('Hata', 'Sunucuya bağlanılamadı.', 'error'));
+            }
+        });
+    } else {
+        if (confirm(`"${baslik}" aboneliğini iptal edildi olarak işaretlemek istiyor musunuz?`)) {
+            const formData = new FormData();
+            formData.append('action', 'durum_degistir');
+            formData.append('subscription_id', subId);
+            formData.append('status', 'canceled');
+            formData.append('csrf_token', '<?= $_SESSION['csrf_token'] ?? '' ?>');
+
+            fetch('ajax.php', { method: 'POST', body: formData })
+                .then(r => r.json())
+                .then(data => {
+                    alert(data.message || (data.success ? 'İptal edildi' : 'Hata'));
+                    if (data.success) location.reload();
+                })
+                .catch(() => alert('Sunucu bağlantı hatası.'));
+        }
+    }
+}
+
+function toggleBudgetEdit() {
+    const box = document.getElementById('budget-edit-box');
+    if (box) {
+        box.classList.toggle('hidden');
+        if (!box.classList.contains('hidden')) {
+            const inp = document.getElementById('input_monthly_budget');
+            if (inp) {
+                inp.focus();
+                inp.select();
+            }
+        }
+    }
+}
+
+function saveBudgetAjax(e) {
+    e.preventDefault();
+    const form = e.target;
+    const btn = form.querySelector('button[type="submit"]');
+    const oldText = btn ? btn.innerHTML : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = 'Kaydediliyor...';
+    }
+
+    const formData = new FormData(form);
+    formData.append('action', 'butce_guncelle');
+
+    fetch('ajax.php', {
+        method: 'POST',
+        body: formData
+    })
+    .then(r => r.json())
+    .then(res => {
+        if (res.success) {
+            if (typeof Swal !== 'undefined') {
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Bütçe Kaydedildi',
+                    text: res.message || 'Aylık bütçe hedefiniz güncellendi.',
+                    showConfirmButton: false,
+                    timer: 1200
+                }).then(() => location.reload());
+            } else {
+                alert(res.message || 'Bütçe hedefiniz güncellendi.');
+                location.reload();
+            }
+        } else {
+            if (typeof Swal !== 'undefined') {
+                Swal.fire('Hata', res.message || 'Bütçe kaydedilemedi.', 'error');
+            } else {
+                alert(res.message || 'Bütçe kaydedilemedi.');
+            }
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = oldText;
+            }
+        }
+    })
+    .catch(err => {
+        if (typeof Swal !== 'undefined') {
+            Swal.fire('Hata', 'Sunucu bağlantı hatası oluştu.', 'error');
+        } else {
+            alert('Sunucu bağlantı hatası oluştu.');
+        }
+        if (btn) {
+            btn.disabled = false;
+            btn.innerHTML = oldText;
+        }
+    });
 }
 </script>
 

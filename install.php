@@ -123,6 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                     `role` ENUM('ADMIN', 'USER') NOT NULL DEFAULT 'USER',
                     `status` ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
                     `full_name` VARCHAR(100) NULL,
+                    `monthly_budget` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
                     `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
                     `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     `password_changed_at` DATETIME NULL
@@ -132,7 +133,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                     `id` INT AUTO_INCREMENT PRIMARY KEY,
                     `name` VARCHAR(100) NOT NULL,
                     `slug` VARCHAR(100) NOT NULL UNIQUE,
-                    `type` ENUM('digital', 'utility', 'telecom', 'vehicle', 'general', 'insurance', 'bes') NOT NULL DEFAULT 'digital',
+                    `type` VARCHAR(50) NOT NULL DEFAULT 'general',
                     `icon` VARCHAR(50) DEFAULT 'credit-card',
                     `color` VARCHAR(30) DEFAULT 'blue',
                     `sort_order` INT DEFAULT 0,
@@ -330,6 +331,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                     INDEX (`user_id`)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+                CREATE TABLE IF NOT EXISTS `subscription_price_history` (
+                    `id` INT AUTO_INCREMENT PRIMARY KEY,
+                    `subscription_id` INT NOT NULL,
+                    `user_id` INT NOT NULL,
+                    `old_price` DECIMAL(10, 2) NOT NULL,
+                    `new_price` DECIMAL(10, 2) NOT NULL,
+                    `percentage_change` DECIMAL(6, 2) NOT NULL DEFAULT 0.00,
+                    `currency` VARCHAR(5) NOT NULL DEFAULT 'TRY',
+                    `notes` VARCHAR(255) NULL,
+                    `changed_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    INDEX `idx_sph_sub` (`subscription_id`),
+                    INDEX `idx_sph_user` (`user_id`),
+                    INDEX `idx_sph_date` (`changed_at`)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
                 CREATE TABLE IF NOT EXISTS `notification_settings` (
                     `id` INT AUTO_INCREMENT PRIMARY KEY,
                     `user_id` INT NOT NULL UNIQUE,
@@ -372,6 +388,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                     `last_attempt` DATETIME DEFAULT CURRENT_TIMESTAMP,
                     `locked_until` DATETIME NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                CREATE TABLE IF NOT EXISTS `category_types` (
+                    `type_key` VARCHAR(50) NOT NULL PRIMARY KEY,
+                    `name` VARCHAR(100) NOT NULL,
+                    `icon` VARCHAR(10) DEFAULT '📌',
+                    `badge_color` VARCHAR(50) DEFAULT 'blue',
+                    `sort_order` INT DEFAULT 0,
+                    `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+                CREATE TABLE IF NOT EXISTS `schema_migrations` (
+                    `version` VARCHAR(100) NOT NULL PRIMARY KEY,
+                    `applied_at` DATETIME DEFAULT CURRENT_TIMESTAMP
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
                 ";
                 $pdo->exec($sql);
 
@@ -398,6 +428,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                 foreach ($defaultCategories as $c) {
                     $catStmt->execute($c);
                 }
+
+                // Varsayılan Kategori Türlerini Ekle
+                $defaultTypes = [
+                    ['digital', 'Dijital Abonelik', '💻', 'purple', 1],
+                    ['utility', 'Ev / Fiziksel Fatura', '⚡', 'yellow', 2],
+                    ['telecom', 'Ev / Telekom', '📡', 'cyan', 3],
+                    ['insurance', 'Sigorta & Poliçe', '🛡️', 'rose', 4],
+                    ['bes', 'Bireysel Emeklilik (BES & OKS)', '📈', 'emerald', 5],
+                    ['vehicle', 'Araç & Taşıt', '🚗', 'blue', 6],
+                    ['general', 'Genel Harcama', '📄', 'slate', 7],
+                    ['tax', 'Vergi & Harç', '💰', 'rose', 8]
+                ];
+                $stmtDef = $pdo->prepare("INSERT IGNORE INTO `category_types` (`type_key`, `name`, `icon`, `badge_color`, `sort_order`) VALUES (?, ?, ?, ?, ?)");
+                foreach ($defaultTypes as $dt) {
+                    $stmtDef->execute($dt);
+                }
+
+                // schema_migrations tablosunu v1..v17 ile başlangıçta işaretle
+                $pdo->exec("
+                    INSERT IGNORE INTO `schema_migrations` (`version`) VALUES 
+                    ('v1_roles'), ('v2_locations'), ('v3_payer_permissions'), ('v4_autopay'),
+                    ('v5_cards_insurance_bes'), ('v6_attachments'), ('v7_schema_sync'),
+                    ('v8_final_sync'), ('v9_security_sync'), ('v10_session_invalidation'),
+                    ('v11_location_access'), ('v12_shares_userid'), ('v13_cashback'),
+                    ('v14_insurance_installments'), ('v15_category_types'),
+                    ('v16_insurance_location_sync'), ('v17_card_color_fix'),
+                    ('v18_categories_type_varchar_and_tax'), ('v19_price_history'),
+                    ('v20_monthly_budget')
+                ");
 
                 // 5. Yönetici Kullanıcıyı Ekle
                 $adminPassHash = password_hash($adminPass, PASSWORD_DEFAULT);

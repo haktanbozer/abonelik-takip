@@ -312,7 +312,7 @@ if ($sonrakiAy > 12) { $sonrakiAy = 1; $sonrakiYil++; }
 
 </div>
 
-<script nonce="<?= $cspNonce ?>">
+<script>
     function hapTiklandi(id, baslik, tutar, label) {
         Swal.fire({
             title: baslik,

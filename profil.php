@@ -1,6 +1,7 @@
 <?php
-$pageTitle = "Profil ve Güvenlik Ayarları - Abonelik Takip";
-require_once __DIR__ . '/header.php';
+// profil.php - Profil ve Güvenlik Ayarları
+require_once __DIR__ . '/db.php';
+girisKontrol();
 
 $userId = $_SESSION['user_id'];
 $successMsg = '';
@@ -8,7 +9,7 @@ $errorMsg = '';
 
 // Kullanıcı Bilgilerini Çek
 try {
-    $stmt = $pdo->prepare("SELECT id, username, email, full_name, created_at FROM users WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT id, username, email, full_name, COALESCE(monthly_budget, 0) as monthly_budget, created_at FROM users WHERE id = ?");
     $stmt->execute([$userId]);
     $user = $stmt->fetch();
 
@@ -27,6 +28,27 @@ try {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrfKontrol($_POST['csrf_token'] ?? '');
     $formType = $_POST['form_type'] ?? '';
+
+    // 0. Aylık Harcama Bütçesi
+    if ($formType === 'butce') {
+        $rawVal = trim($_POST['monthly_budget'] ?? '0');
+        $rawVal = str_replace(' ', '', $rawVal);
+        if (strpos($rawVal, ',') !== false && strpos($rawVal, '.') !== false) {
+            $rawVal = str_replace('.', '', $rawVal);
+            $rawVal = str_replace(',', '.', $rawVal);
+        } else {
+            $rawVal = str_replace(',', '.', $rawVal);
+        }
+        $monthlyBudget = max(0, (float)$rawVal);
+        try {
+            $pdo->prepare("UPDATE users SET monthly_budget = ? WHERE id = ?")->execute([$monthlyBudget, $userId]);
+            $user['monthly_budget'] = $monthlyBudget;
+            $successMsg = 'Aylık bütçe hedefiniz başarıyla kaydedildi.';
+            sistemLogla("Kullanıcı Aylık Bütçe Hedefini Güncelledi: {$monthlyBudget} ₺ (ID {$userId})", 'INFO');
+        } catch (Exception $e) {
+            $errorMsg = 'Bütçe güncellenirken bir hata oluştu: ' . $e->getMessage();
+        }
+    }
 
     // 1. Profil Bilgileri
     if ($formType === 'profil') {
@@ -117,11 +139,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (strlen($newPin) < 4 || strlen($newPin) > 8) {
                 $errorMsg = 'Yeni Master PIN 4 ile 8 hane arasında olmalıdır.';
             } else {
-                $stmtPin = $pdo->prepare("SELECT master_pin_hash FROM users WHERE id = ?");
+                $stmtPin = $pdo->prepare("SELECT password, master_pin_hash FROM users WHERE id = ?");
                 $stmtPin->execute([$userId]);
-                $pinHash = $stmtPin->fetchColumn();
+                $uRow = $stmtPin->fetch();
+                $pinHash = $uRow['master_pin_hash'] ?? null;
+                $accPass = $uRow['password'] ?? '';
 
-                if (!password_verify($oldPin, $pinHash)) {
+                $pinValid = false;
+                if (!empty($pinHash) && password_verify($oldPin, $pinHash)) {
+                    $pinValid = true;
+                } elseif (password_verify($oldPin, $accPass)) {
+                    $pinValid = true;
+                }
+
+                if (!$pinValid) {
                     $curAttempts = ($pinAttempt && (empty($pinAttempt['locked_until']) || strtotime($pinAttempt['locked_until']) <= time())) ? (int)$pinAttempt['attempts'] : 0;
                     $newAttempts = $curAttempts + 1;
 
@@ -183,16 +214,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     VALUES (?, ?, ?, 'mastercard', ?, 1, 10, 1)
                 ");
                 $stmtAddCard->execute([$userId, $bankName, $cardName, !empty($last4) ? $last4 : null]);
-                header("Location: profil.php?msg=card_added");
-                exit;
+                guvenliYonlendir("profil.php?msg=card_added");
             } else {
                 $stmtAddPm = $pdo->prepare("
                     INSERT INTO payment_methods (user_id, title, bank_name, card_type, card_last_4, is_auto_pay)
                     VALUES (?, ?, ?, 'bank_transfer', ?, ?)
                 ");
                 $stmtAddPm->execute([$userId, $title, $title, !empty($last4) ? $last4 : null, $isAuto]);
-                header("Location: profil.php?msg=card_added");
-                exit;
+                guvenliYonlendir("profil.php?msg=card_added");
             }
         }
     }
@@ -202,13 +231,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $delType = $_POST['del_type'] ?? 'payment_method';
         $targetId = (int)($_POST['target_id'] ?? $_POST['pm_id'] ?? 0);
 
-        if ($delType === 'credit_card') {
-            $pdo->prepare("DELETE FROM credit_cards WHERE id = ? AND user_id = ?")->execute([$targetId, $userId]);
-        } else {
-            $pdo->prepare("DELETE FROM payment_methods WHERE id = ? AND user_id = ?")->execute([$targetId, $userId]);
+        try {
+            if ($delType === 'credit_card') {
+                $pdo->prepare("UPDATE subscriptions SET credit_card_id = NULL WHERE credit_card_id = ? AND user_id = ?")->execute([$targetId, $userId]);
+                $pdo->prepare("DELETE FROM credit_cards WHERE id = ? AND user_id = ?")->execute([$targetId, $userId]);
+            } else {
+                $pdo->prepare("UPDATE subscriptions SET payment_method_id = NULL WHERE payment_method_id = ? AND user_id = ?")->execute([$targetId, $userId]);
+                $pdo->prepare("DELETE FROM payment_methods WHERE id = ? AND user_id = ?")->execute([$targetId, $userId]);
+            }
+            guvenliYonlendir("profil.php?msg=card_deleted");
+        } catch (Exception $e) {
+            $errorMsg = 'Silme işlemi sırasında hata oluştu: ' . $e->getMessage();
         }
-        header("Location: profil.php?msg=card_deleted");
-        exit;
     }
 }
 
@@ -219,6 +253,9 @@ if (isset($_GET['msg'])) {
         $successMsg = 'Kart / Ödeme aracı başarıyla silindi.';
     }
 }
+
+$pageTitle = "Profil ve Güvenlik Ayarları - Abonelik Takip";
+require_once __DIR__ . '/header.php';
 ?>
 
 <div class="max-w-4xl mx-auto space-y-6">
@@ -241,6 +278,47 @@ if (isset($_GET['msg'])) {
     <?php endif; ?>
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+        <!-- Aylık Harcama Bütçesi ve Limit Takibi -->
+        <div class="bg-white dark:bg-slate-900 border border-emerald-500/30 rounded-3xl p-6 shadow-sm space-y-4 md:col-span-2 relative overflow-hidden">
+            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center text-xl shadow-sm">
+                        🎯
+                    </div>
+                    <div>
+                        <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">Aylık Harcama Bütçe Hedefi</h2>
+                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Aylık maksimum hedef abonelik bütçenizi belirleyin. Dashboard ana sayfasında kalan bütçeniz ve harcama yüzdeniz anlık hesaplanır.</p>
+                    </div>
+                </div>
+                <?php if ((float)($user['monthly_budget'] ?? 0) > 0): ?>
+                    <span class="px-3 py-1 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 rounded-full text-xs font-bold self-start sm:self-auto">
+                        Mevcut Hedef: <?= paraFormat($user['monthly_budget'], 'TRY') ?>
+                    </span>
+                <?php endif; ?>
+            </div>
+
+            <form method="POST" class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <?= csrfAlaniniEkle() ?>
+                <input type="hidden" name="form_type" value="butce">
+
+                <div class="sm:col-span-2">
+                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Aylık Maksimum Hedef Tutar (₺)</label>
+                    <div class="relative">
+                        <input type="number" step="0.01" min="0" name="monthly_budget" value="<?= htmlspecialchars((string)((float)($user['monthly_budget'] ?? 0) > 0 ? $user['monthly_budget'] : '')) ?>" placeholder="Örn: 3500.00 (Kapalı bırakmak için 0)"
+                            class="w-full p-3 pl-8 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl text-slate-900 dark:text-white text-xs font-bold focus:ring-2 focus:ring-emerald-500 outline-none">
+                        <span class="absolute left-3 top-3 text-slate-400 font-bold text-xs">₺</span>
+                    </div>
+                    <span class="text-[10px] text-slate-400 mt-1 block">Bütçe takibini pasif bırakmak isterseniz 0 yazabilir veya boş bırakabilirsiniz.</span>
+                </div>
+
+                <div>
+                    <button type="submit" class="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white rounded-xl font-bold text-xs transition shadow-md shadow-emerald-500/20">
+                        Bütçe Limitini Kaydet
+                    </button>
+                </div>
+            </form>
+        </div>
 
         <!-- 1. Profil Bilgileri -->
         <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-sm space-y-4">
@@ -455,7 +533,7 @@ if (isset($_GET['msg'])) {
 
 </div>
 
-<script nonce="<?= $cspNonce ?>">
+<script>
 function toggleCardInputs(type) {
     const titleInput = document.getElementById('pm_title_input');
     const autoWrapper = document.getElementById('pm_auto_wrapper');
