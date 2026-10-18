@@ -249,36 +249,6 @@ abonelik-takip/
 └── install.php             # Otomatik kurulum sihirbazı
 ```
 
----
-
-## 🐙 GitHub'a Yükleme (Git İlk Kurulum)
-
-Projeyi ilk defa GitHub'a aktarmak için terminal veya Git Bash üzerinden şu adımları izleyebilirsiniz:
-
-```bash
-# 1. Proje dizinine geçin ve Git deposunu başlatın
-git init
-
-# 2. Tüm optimize edilmiş dosyaları hazırlık alanına ekleyin
-git add .
-
-# 3. İlk commit'inizi oluşturun
-git commit -m "feat: ilk kararlı sürüm (Abonelik ve Fatura Takip Sistemi)"
-
-# 4. Ana dal adını main olarak belirleyin
-git branch -M main
-
-# 5. Kendi GitHub deponuzu uzak depo (remote) olarak bağlayın
-git remote add origin https://github.com/KULLANICI_ADINIZ/DEPO_ADINIZ.git
-
-# 6. Kodları GitHub'a gönderin
-git push -u origin main
-```
-
-> [!NOTE]
-> `.env`, kişisel veritabanı dökümleri (`*.sql`), derleme araçları (`tools/`), oturum dosyaları (`sessions/`), sistem logları (`logs/`) ve yüklenen gerçek faturalar (`uploads/documents/`) `.gitignore` ile korunmaktadır; GitHub'a asla yüklenmez. Depoya yalnızca temiz şablon olan `.env.example` ve boş şema dosyası `database.sql` dahil edilir.
-
----
 
 ## 📄 Lisans
 
