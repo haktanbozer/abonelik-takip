@@ -109,68 +109,20 @@ Hem dijital platformlarınızı (Netflix, Spotify, ChatGPT vb.), hem ev faturala
 
 ---
 
-## 🚀 Kurulum Rehberi
+## 🚀 Kolay Kurulum (3 Adımda)
 
-### Sistem Gereksinimleri
-* PHP 7.4 veya üzeri (PHP 8.0, 8.1, 8.2, 8.3 ile tam uyumludur)
-* MySQL 5.7+ veya MariaDB 10.3+
-* PHP Eklentileri: `pdo_mysql`, `openssl`, `mbstring`, `json`
-* Apache, Nginx veya LiteSpeed web sunucusu
+Sistemi paylaşımlı hosting (cPanel, Plesk), yerel sunucu (XAMPP, Laragon) veya VPS üzerinde 3 basit adımda kurabilirsiniz:
 
----
-
-### Yöntem 1: Otomatik Kurulum Sihirbazı (Önerilen)
-
-1. Proje dosyalarını web sunucunuzun dizinine (`public_html/` veya `htdocs/`) yükleyin.
-2. Tarayıcınızdan kurulum sihirbazını açın:
+1. **Dosyaları Yükleyin:** Proje dosyalarını web sunucunuzun ana dizinine (`public_html/` veya `htdocs/`) yükleyin.
+2. **Veritabanı Oluşturun:** Hosting panelinizden (cPanel -> MySQL Veritabanları) boş bir veritabanı ve kullanıcı oluşturup kullanıcıya tüm yetkileri verin.
+3. **Kurulum Sihirbazını Çalıştırın (`install.php`):** Tarayıcınızdan kurulum sihirbazını açın:
    ```
-   http://localhost/abonelik-takip/install.php
+   http://alanadiniz.com/install.php
    ```
-3. Kurulum ekranında veritabanı, yönetici hesabı, Master PIN ve SMTP bilgilerinizi girip **"Kurulumu Başlat"** butonuna tıklayın.
-4. Sihirbaz veritabanı tablolarını, varsayılan kategorileri ve `.env` dosyasını otomatik oluşturacaktır.
-5. Kurulum bittikten sonra güvenlik için `install.php` dosyasını sunucunuzdan silin.
+   Formda veritabanı bilgilerinizi, dilediğiniz yönetici kullanıcı adı, güçlü parola, Master PIN ve SMTP bilgilerinizi girip **"Kurulumu Başlat"** butonuna tıklayın. Sihirbaz tüm tabloları, varsayılan kategorileri, şifreleme anahtarlarını ve `.env` yapılandırmasını otomatik oluşturacaktır.
 
----
-
-### Yöntem 2: Manuel Kurulum (.env ve SQL ile)
-
-1. Sunucunuzda MySQL veritabanı oluşturun ve `database.sql` dosyasını phpMyAdmin veya MySQL CLI ile içeri aktarın:
-   ```bash
-   mysql -u kullanici_adi -p veritabani_adi < database.sql
-   ```
-2. `.env.example` dosyasını `.env` olarak kopyalayın:
-   ```bash
-   cp .env.example .env
-   ```
-3. `.env` dosyasını kendi ortamınıza göre düzenleyin:
-   ```env
-   APP_INSTALLED=true
-   DB_HOST=localhost
-   DB_PORT=3306
-   DB_NAME=veritabani_adiniz
-   DB_USER=veritabani_kullaniciniz
-   DB_PASS=veritabani_sifreniz
-
-   APP_ENV=production
-   APP_URL=https://alanadiniz.com/abonelik-takip
-   APP_SECRET_KEY=32_karakterlik_guclu_rastgele_bir_anahtar
-   MASTER_SALT=rastgele_bir_salt_metni
-
-   SMTP_HOST=smtp.gmail.com
-   SMTP_PORT=587
-   SMTP_USER=ornek@gmail.com
-   SMTP_PASS=uygulama_sifreniz
-   SMTP_SECURE=tls
-   MAIL_FROM_ADDRESS=ornek@gmail.com
-   MAIL_FROM_NAME="Abonelik Takip Asistanı"
-
-   CRON_SECRET=guclu_bir_cron_guvenlik_anahtari
-   DEFAULT_CURRENCY=TRY
-   ```
-4. Yönetici hesabınızı oluşturun ve sisteme giriş yapın:
-   * Tarayıcınızdan kurulum sihirbazını (`http://localhost/abonelik-takip/install.php`) açarak yönetici kullanıcı adı, güçlü şifre, e-posta ve Master PIN kodunuzu belirleyin.
-   * Sihirbaz ilk yönetici kaydınızı ve şifreleme anahtarlarını güvenli hash algoritmalarıyla otomatik olarak kaydedecektir.
-   *(Kurulum tamamlandıktan sonra güvenlik amacıyla `install.php` dosyasını sunucunuzdan silebilirsiniz).*
+> [!IMPORTANT]
+> **🔒 Kritik Güvenlik Uyarısı:** Kurulum sihirbazı başarıyla tamamlandıktan sonra, sunucunuzdaki **`install.php`** dosyasını **mutlaka silin**. Sistem kurulu olduğu sürece `install.php` kendisini erişime kilitlese de, dosyanın sunucudan tamamen silinmesi en güvenli uygulamadır.
 
 ---
 
@@ -247,35 +199,6 @@ abonelik-takip/
 ├── offline.html            # Çevrimdışı durum bilgilendirme sayfası
 └── install.php             # Otomatik kurulum sihirbazı
 ```
-
----
-
-## 🐙 GitHub'a Yükleme (Git İlk Kurulum)
-
-Projeyi ilk defa GitHub'a aktarmak için terminal veya Git Bash üzerinden şu adımları izleyebilirsiniz:
-
-```bash
-# 1. Proje dizinine geçin ve Git deposunu başlatın
-git init
-
-# 2. Tüm optimize edilmiş dosyaları hazırlık alanına ekleyin
-git add .
-
-# 3. İlk commit'inizi oluşturun
-git commit -m "feat: ilk kararlı sürüm (Abonelik ve Fatura Takip Sistemi)"
-
-# 4. Ana dal adını main olarak belirleyin
-git branch -M main
-
-# 5. Kendi GitHub deponuzu uzak depo (remote) olarak bağlayın
-git remote add origin https://github.com/KULLANICI_ADINIZ/DEPO_ADINIZ.git
-
-# 6. Kodları GitHub'a gönderin
-git push -u origin main
-```
-
-> [!NOTE]
-> `.env`, kişisel veritabanı dökümleri (`*.sql`), derleme araçları (`tools/`), oturum dosyaları (`sessions/`), sistem logları (`logs/`) ve yüklenen gerçek faturalar (`uploads/documents/`) `.gitignore` ile korunmaktadır; GitHub'a asla yüklenmez. Depoya yalnızca temiz şablon olan `.env.example` ve boş şema dosyası `database.sql` dahil edilir.
 
 ---
 
