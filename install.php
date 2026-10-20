@@ -489,36 +489,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                 $notifStmt = $pdo->prepare("INSERT INTO `notification_settings` (`user_id`, `email_enabled`, `notify_trial_days`, `notify_commitment_days`, `notify_due_days`) VALUES (?, 1, '3,1', '30,15,3', '3,1')");
                 $notifStmt->execute([$adminId]);
 
-                // 7. .env Dosyasını Oluştur
+                // 7. .env Dosyasını Oluştur (Girdileri temizle ve güvenli kaçış uygula)
+                $escapeEnv = function($val) {
+                    $clean = str_replace(["\r", "\n"], '', (string)$val);
+                    return '"' . addcslashes($clean, '"\\$') . '"';
+                };
+
                 $envContent = "# -------------------------------------------------------------\n";
                 $envContent .= "# ABONELİK VE FATURA TAKİP SİSTEMİ YAPILANDIRMASI\n";
                 $envContent .= "# Kurulum Tarihi: " . date('Y-m-d H:i:s') . "\n";
                 $envContent .= "# -------------------------------------------------------------\n\n";
                 $envContent .= "APP_INSTALLED=true\n\n";
-                $envContent .= "DB_HOST={$dbHost}\n";
-                $envContent .= "DB_PORT={$dbPort}\n";
-                $envContent .= "DB_NAME={$dbName}\n";
-                $envContent .= "DB_USER={$dbUser}\n";
-                $envContent .= "DB_PASS={$dbPass}\n\n";
+                $envContent .= "DB_HOST=" . $escapeEnv($dbHost) . "\n";
+                $envContent .= "DB_PORT=" . (int)$dbPort . "\n";
+                $envContent .= "DB_NAME=" . $escapeEnv($dbName) . "\n";
+                $envContent .= "DB_USER=" . $escapeEnv($dbUser) . "\n";
+                $envContent .= "DB_PASS=" . $escapeEnv($dbPass) . "\n\n";
 
                 $envContent .= "APP_ENV=production\n";
-                $envContent .= "APP_URL=" . (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://{$_SERVER['HTTP_HOST']}" . dirname($_SERVER['SCRIPT_NAME']) . "\n";
-                $envContent .= "APP_SECRET_KEY={$defaultAppSecret}\n";
-                $envContent .= "MASTER_SALT={$defaultSalt}\n\n";
+                $appUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://{$_SERVER['HTTP_HOST']}" . dirname($_SERVER['SCRIPT_NAME']);
+                $envContent .= "APP_URL=" . $escapeEnv(rtrim($appUrl, '/\\')) . "\n";
+                $envContent .= "APP_SECRET_KEY=" . $escapeEnv($defaultAppSecret) . "\n";
+                $envContent .= "MASTER_SALT=" . $escapeEnv($defaultSalt) . "\n\n";
 
-                $envContent .= "SMTP_HOST={$smtpHost}\n";
-                $envContent .= "SMTP_PORT={$smtpPort}\n";
-                $envContent .= "SMTP_USER={$smtpUser}\n";
-                $envContent .= "SMTP_PASS={$smtpPass}\n";
-                $envContent .= "SMTP_SECURE={$smtpSecure}\n";
-                $envContent .= "MAIL_FROM_ADDRESS={$mailFrom}\n";
-                $envContent .= "MAIL_FROM_NAME=\"{$mailFromName}\"\n";
-                $envContent .= "NOTIFICATION_EMAIL={$adminEmail}\n\n";
+                $envContent .= "SMTP_HOST=" . $escapeEnv($smtpHost) . "\n";
+                $envContent .= "SMTP_PORT=" . (int)$smtpPort . "\n";
+                $envContent .= "SMTP_USER=" . $escapeEnv($smtpUser) . "\n";
+                $envContent .= "SMTP_PASS=" . $escapeEnv($smtpPass) . "\n";
+                $envContent .= "SMTP_SECURE=" . $escapeEnv($smtpSecure) . "\n";
+                $envContent .= "MAIL_FROM_ADDRESS=" . $escapeEnv($mailFrom) . "\n";
+                $envContent .= "MAIL_FROM_NAME=" . $escapeEnv($mailFromName) . "\n";
+                $envContent .= "NOTIFICATION_EMAIL=" . $escapeEnv($adminEmail) . "\n\n";
 
-                $envContent .= "CRON_SECRET={$cronSecret}\n";
+                $envContent .= "CRON_SECRET=" . $escapeEnv($cronSecret) . "\n";
                 $envContent .= "DEFAULT_CURRENCY=TRY\n";
 
                 file_put_contents(__DIR__ . '/.env', $envContent);
+                @chmod(__DIR__ . '/.env', 0600);
 
                 // 8. Belge Yükleme Klasörünü, index.php ve Güvenlik (.htaccess) Dosyasını Oluştur
                 $uploadDocDir = __DIR__ . '/uploads/documents';
@@ -600,6 +607,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['kurulum_yap'])) {
                 <div><span class="text-slate-500">Master PIN:</span> <strong class="text-emerald-400">•••• (Kaydedildi)</strong></div>
                 <div><span class="text-slate-500">Cron Token:</span> <strong class="text-amber-400 font-mono"><?= htmlspecialchars($_POST['cron_secret']) ?></strong></div>
             </div>
+            <p class="text-xs text-amber-300 bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
+                🔒 <strong>Güvenlik İpucu:</strong> Kurulum tamamlandı. Sistem kurulu olduğu sürece bu sayfaya erişim otomatik olarak engellenir. Dilerseniz ek güvenlik için <code>install.php</code> dosyasını sunucunuzdan silebilirsiniz.
+            </p>
             <a href="login.php" class="inline-block w-full py-3.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-sm transition shadow-lg shadow-blue-600/20">
                 Giriş Ekranına Git →
             </a>

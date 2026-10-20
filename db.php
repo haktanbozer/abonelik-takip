@@ -88,7 +88,7 @@ function envYukle($dosya) {
             $deger = trim($deger);
             // Tırnak işaretlerini temizle
             if (preg_match('/^"(.*)"$/', $deger, $m) || preg_match("/^'(.*)'$/", $deger, $m)) {
-                $deger = $m[1];
+                $deger = stripcslashes($m[1]);
             }
             $veriler[$anahtar] = $deger;
             if (!array_key_exists($anahtar, $_SERVER) && !array_key_exists($anahtar, $_ENV)) {

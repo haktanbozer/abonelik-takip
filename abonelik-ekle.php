@@ -14,7 +14,14 @@ try {
     $userRole = $_SESSION['role'] ?? 'USER';
     $locations = kullaniciKonumlariGetir($userId, $userRole);
 
-    $paymentMethods = $pdo->query("SELECT * FROM payment_methods ORDER BY title ASC")->fetchAll();
+    // Ödeme Yöntemleri (Admin tümünü, normal kullanıcı sadece kendisininkileri görebilir)
+    if ($userRole === 'ADMIN') {
+        $paymentMethods = $pdo->query("SELECT * FROM payment_methods ORDER BY title ASC")->fetchAll();
+    } else {
+        $stmtPm = $pdo->prepare("SELECT * FROM payment_methods WHERE user_id = ? ORDER BY title ASC");
+        $stmtPm->execute([$userId]);
+        $paymentMethods = $stmtPm->fetchAll();
+    }
     
     // Aktif Kullanıcılar (Ödeme sorumlusu atama ve şifre paylaşımı için)
     $stmtUsers = $pdo->query("SELECT id, username, full_name, role FROM users WHERE status = 'active' ORDER BY full_name ASC, username ASC");
@@ -50,6 +57,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $checkCard->execute([$creditCardId, $userId]);
         if ($checkCard->rowCount() === 0) {
             $creditCardId = null; // Başkasına ait kartın izinsiz bağlanması engellendi
+        }
+    }
+    if ($paymentMethodId !== null && !$isAdmin) {
+        $checkPm = $pdo->prepare("SELECT id FROM payment_methods WHERE id = ? AND user_id = ?");
+        $checkPm->execute([$paymentMethodId, $userId]);
+        if ($checkPm->rowCount() === 0) {
+            $paymentMethodId = null; // Başkasına ait ödeme yönteminin izinsiz bağlanması engellendi
         }
     }
     if ($locationId !== null) {

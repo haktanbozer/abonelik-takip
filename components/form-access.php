@@ -3,6 +3,10 @@
  * Abonelik Bilgilerini & Şifreyi Görüntüleme İzni Form Bileşeni
  * Tüm abonelik türlerinde (Dijital, Fatura, Telekom, Sigorta, BES, Araç, Vergi, Genel) ortak kullanılır.
  */
+if (!defined('HEADER_INCLUDED') && !isset($pdo)) {
+    http_response_code(403);
+    die('Doğrudan erişim engellendi.');
+}
 $isEdit = isset($sub);
 $ownerId = $isEdit ? (int)($sub['user_id'] ?? $userId) : (int)$userId;
 $allowedUsersList = $isEdit ? ($currentAllowedUsers ?? []) : ($_POST['allowed_users'] ?? []);

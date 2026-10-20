@@ -55,7 +55,14 @@ try {
     // Konumlar (Admin tümünü, normal kullanıcı sadece yetkili olduğu mekanları görebilir)
     $locations = kullaniciKonumlariGetir($userId, $userRole);
 
-    $paymentMethods = $pdo->query("SELECT * FROM payment_methods ORDER BY title ASC")->fetchAll();
+    // Ödeme Yöntemleri (Admin tümünü, normal kullanıcı sadece kendisininkileri görebilir)
+    if ($userRole === 'ADMIN') {
+        $paymentMethods = $pdo->query("SELECT * FROM payment_methods ORDER BY title ASC")->fetchAll();
+    } else {
+        $stmtPm = $pdo->prepare("SELECT * FROM payment_methods WHERE user_id = ? ORDER BY title ASC");
+        $stmtPm->execute([$userId]);
+        $paymentMethods = $stmtPm->fetchAll();
+    }
     
     // Kredi Kartları
     if ($userRole === 'ADMIN') {
@@ -90,13 +97,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $paymentMethodId = !empty($_POST['payment_method_id']) ? (int)$_POST['payment_method_id'] : null;
     $creditCardId = !empty($_POST['credit_card_id']) ? (int)$_POST['credit_card_id'] : null;
 
-    // IDOR Güvenliği: Kredi kartı ve mekan doğrulama
+    // IDOR Güvenliği: Kredi kartı, ödeme yöntemi ve mekan doğrulama
     $isAdmin = ($userRole === 'ADMIN');
     if ($creditCardId !== null && !$isAdmin) {
         $checkCard = $pdo->prepare("SELECT id FROM credit_cards WHERE id = ? AND user_id = ? AND is_active = 1");
         $checkCard->execute([$creditCardId, $userId]);
         if ($checkCard->rowCount() === 0) {
             $creditCardId = null;
+        }
+    }
+    if ($paymentMethodId !== null && !$isAdmin) {
+        $checkPm = $pdo->prepare("SELECT id FROM payment_methods WHERE id = ? AND user_id = ?");
+        $checkPm->execute([$paymentMethodId, $userId]);
+        if ($checkPm->rowCount() === 0) {
+            $paymentMethodId = null;
         }
     }
     if ($locationId !== null) {

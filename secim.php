@@ -7,12 +7,6 @@ $userRole = $_SESSION['role'] ?? 'USER';
 $isAdmin = ($userRole === 'ADMIN');
 $hata = '';
 
-// Otomatik Eski Isimleri Guncelle (Kisisel & Dijital -> Dijital, Evim -> Ev, Vergi -> tax)
-try {
-    $pdo->exec("UPDATE locations SET name = 'Dijital', icon = 'globe' WHERE name LIKE '%Dijital%'");
-    $pdo->exec("UPDATE locations SET name = 'Ev', icon = 'home' WHERE name = 'Evim'");
-    $pdo->exec("UPDATE locations SET icon = 'tax' WHERE (LOWER(name) LIKE '%vergi%' OR LOWER(name) LIKE '%tax%') AND icon = 'chart'");
-} catch (Exception $e) {}
 
 // 1. "Tum Mekanlar" Secildiyse
 if (isset($_GET['hepsi'])) {

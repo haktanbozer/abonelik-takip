@@ -750,7 +750,6 @@ if ($budgetPercent > 100) {
                     <div>
                         <div class="flex items-center gap-2">
                             <h2 class="text-base font-bold text-slate-900 dark:text-white">Aylık Bütçe Limiti Belirleyin</h2>
-                            <span class="px-2 py-0.5 bg-blue-500 text-white rounded-full text-[10px] font-extrabold shadow-sm">Yeni Özellik</span>
                         </div>
                         <p class="text-xs text-slate-600 dark:text-slate-400 mt-1 max-w-xl">
                             Aylık maksimum ne kadar harcamak istediğinizi belirleyin. Bütçenizin doluluk oranını, kalan limitinizi ve harcama alarmlarını bu alandan anlık takip edin.

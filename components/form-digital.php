@@ -3,6 +3,10 @@
  * Dijital Servis Detayları Form Bileşeni (Netflix, Spotify, Bulut vb.)
  * Hem abonelik-ekle.php hem de abonelik-duzenle.php tarafından ortak kullanılır.
  */
+if (!defined('HEADER_INCLUDED') && !isset($pdo)) {
+    http_response_code(403);
+    die('Doğrudan erişim engellendi.');
+}
 $isEdit = isset($sub);
 $hiddenClass = $isEdit ? (($sub['category_type'] === 'digital') ? '' : 'hidden') : 'hidden';
 $accountUsername = $isEdit ? ($sub['account_username'] ?? '') : ($_POST['account_username'] ?? '');
