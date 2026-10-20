@@ -167,11 +167,10 @@ Hem dijital platformlarınızı (Netflix, Spotify, ChatGPT vb.), hem ev faturala
    CRON_SECRET=guclu_bir_cron_guvenlik_anahtari
    DEFAULT_CURRENCY=TRY
    ```
-4. Varsayılan yönetici hesabı ile giriş yapın:
-   * **Kullanıcı Adı:** `admin`
-   * **Şifre:** `admin123456*`
-   * **Master PIN:** `1234`
-   *(Giriş yaptıktan sonra şifrenizi ve Master PIN kodunuzu Profil sayfasından hemen değiştirin).*
+4. Yönetici hesabınızı oluşturun ve sisteme giriş yapın:
+   * Tarayıcınızdan kurulum sihirbazını (`http://localhost/abonelik-takip/install.php`) açarak yönetici kullanıcı adı, güçlü şifre, e-posta ve Master PIN kodunuzu belirleyin.
+   * Sihirbaz ilk yönetici kaydınızı ve şifreleme anahtarlarını güvenli hash algoritmalarıyla otomatik olarak kaydedecektir.
+   *(Kurulum tamamlandıktan sonra güvenlik amacıyla `install.php` dosyasını sunucunuzdan silebilirsiniz).*
 
 ---
 
@@ -249,6 +248,36 @@ abonelik-takip/
 └── install.php             # Otomatik kurulum sihirbazı
 ```
 
+---
+
+## 🐙 GitHub'a Yükleme (Git İlk Kurulum)
+
+Projeyi ilk defa GitHub'a aktarmak için terminal veya Git Bash üzerinden şu adımları izleyebilirsiniz:
+
+```bash
+# 1. Proje dizinine geçin ve Git deposunu başlatın
+git init
+
+# 2. Tüm optimize edilmiş dosyaları hazırlık alanına ekleyin
+git add .
+
+# 3. İlk commit'inizi oluşturun
+git commit -m "feat: ilk kararlı sürüm (Abonelik ve Fatura Takip Sistemi)"
+
+# 4. Ana dal adını main olarak belirleyin
+git branch -M main
+
+# 5. Kendi GitHub deponuzu uzak depo (remote) olarak bağlayın
+git remote add origin https://github.com/KULLANICI_ADINIZ/DEPO_ADINIZ.git
+
+# 6. Kodları GitHub'a gönderin
+git push -u origin main
+```
+
+> [!NOTE]
+> `.env`, kişisel veritabanı dökümleri (`*.sql`), derleme araçları (`tools/`), oturum dosyaları (`sessions/`), sistem logları (`logs/`) ve yüklenen gerçek faturalar (`uploads/documents/`) `.gitignore` ile korunmaktadır; GitHub'a asla yüklenmez. Depoya yalnızca temiz şablon olan `.env.example` ve boş şema dosyası `database.sql` dahil edilir.
+
+---
 
 ## 📄 Lisans
 
